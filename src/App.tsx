@@ -12,6 +12,7 @@ import { useIsMobile } from './hooks/useMediaQuery';
 import { useRepos } from './hooks/useRepos';
 import { useChat } from './hooks/useChat';
 import { useChronicle } from './hooks/useChronicle';
+import { useTheme } from './hooks/useTheme';
 
 type View = 'threshold' | 'conversation';
 
@@ -23,6 +24,7 @@ const COMPANION_LABEL: Record<CompanionId, string> = {
 
 export default function App() {
   const isMobile = useIsMobile();
+  const { theme, toggle: toggleTheme } = useTheme();
   const reposState = useRepos();
   const repos = reposState.repos;
   const reposLoading = reposState.status === 'loading';
@@ -36,11 +38,14 @@ export default function App() {
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
+  const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
 
   const chat = useChat({
     repo,
     cli: companion,
     enabled: view === 'conversation' && !!repo,
+    initialMessage: pendingFirstMessage,
+    onInitialMessageSent: () => setPendingFirstMessage(null),
   });
 
   // Refresh the chronicle whenever a turn finishes — Sam may have just
@@ -64,25 +69,34 @@ export default function App() {
     }
   }, [chat.blocks, view]);
 
-  const setForth = ({ companion: c, repo: r }: { companion: CompanionId; repo?: Repo }) => {
+  const setForth = ({
+    companion: c,
+    repo: r,
+    initialMessage,
+  }: { companion: CompanionId; repo?: Repo; initialMessage?: string }) => {
     setCompanion(c);
     setRepo(r);
     setView('conversation');
     setErrandTitle('a fresh errand');
+    setPendingFirstMessage(initialMessage ?? null);
   };
 
   const repoLabel = repo
     ? `${repo.name}${repo.branch ? ` · ${repo.branch}` : ''}`
     : 'just chatting';
 
+  const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
+
   if (isMobile) {
     return (
-      <div className="sw-app">
+      <div className={appClass}>
         {view === 'threshold' ? (
           <MobileThreshold
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
+            theme={theme}
+            onToggleTheme={toggleTheme}
           />
         ) : (
           <MobileConversation
@@ -116,7 +130,7 @@ export default function App() {
   }
 
   return (
-    <div className="sw-app" style={{ flexDirection: 'row' }}>
+    <div className={appClass} style={{ flexDirection: 'row' }}>
       <ChronicleRibbon
         events={chronicle.events}
         activeId={view === 'conversation' ? activeEventId : null}
@@ -126,6 +140,8 @@ export default function App() {
           setView('conversation');
         }}
         onNew={() => setView('threshold')}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
       <main
         style={{

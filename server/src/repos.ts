@@ -3,7 +3,12 @@ import { existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ASSISTANT_HUB_PATH, REPO_SCAN_PATHS } from './config.ts';
+import {
+  ASSISTANT_HUB_PATH,
+  REPO_SCAN_PATHS,
+  REPO_SCAN_HUB_PATHS,
+  IGNORED_HUB_NAMES,
+} from './config.ts';
 
 const exec = promisify(execFile);
 
@@ -60,6 +65,18 @@ export async function discoverRepos(): Promise<DiscoveredRepo[]> {
     const hubName = basename(parent);
     const repos = await scanParent(parent, hubName);
     all.push(...repos);
+  }
+
+  // Two-level walk: each entry contains hub folders, each hub contains repos.
+  for (const root of REPO_SCAN_HUB_PATHS) {
+    if (!existsSync(root)) continue;
+    const hubs = await readdir(root, { withFileTypes: true });
+    for (const h of hubs) {
+      if (!h.isDirectory()) continue;
+      if (IGNORED_HUB_NAMES.has(h.name)) continue;
+      const repos = await scanParent(join(root, h.name), h.name);
+      all.push(...repos);
+    }
   }
 
   // Stat for mtime to roughly sort by recent activity.

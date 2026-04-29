@@ -14,16 +14,21 @@ export function ChronicleRibbon({
   collapsed = false,
   onSelect,
   onNew,
+  theme = 'light',
+  onToggleTheme,
 }: {
   events: ChronicleEvent[];
   activeId?: string | null;
   collapsed?: boolean;
   onSelect?: (id: string) => void;
   onNew?: () => void;
+  theme?: 'light' | 'dark';
+  onToggleTheme?: () => void;
 }) {
   const wide = !collapsed;
   return (
     <aside
+      className="sw-chronicle-ribbon"
       style={{
         position: 'sticky',
         top: 0,
@@ -31,7 +36,6 @@ export function ChronicleRibbon({
         width: wide ? 200 : 56,
         height: '100dvh',
         borderRight: '1px solid var(--rule-soft)',
-        background: 'rgba(232, 220, 196, 0.4)',
         backdropFilter: 'blur(6px)',
         padding: '20px 0',
         transition: 'width 0.2s',
@@ -42,11 +46,14 @@ export function ChronicleRibbon({
       }}
     >
       <div
+        onClick={onNew}
+        title="back to the threshold"
         style={{
           padding: wide ? '0 16px 8px' : '0 12px 8px',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
+          cursor: 'pointer',
         }}
       >
         <SamPortrait size={20} />
@@ -186,6 +193,9 @@ export function ChronicleRibbon({
         style={{
           padding: wide ? '8px 12px 0' : '8px 8px 0',
           borderTop: '1px solid var(--rule-soft)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
         }}
       >
         <button
@@ -201,6 +211,24 @@ export function ChronicleRibbon({
         >
           {wide ? '+ a new errand' : '+'}
         </button>
+        {onToggleTheme && (
+          <button
+            className="sw-btn"
+            onClick={onToggleTheme}
+            title={theme === 'dark' ? 'switch to day' : 'switch to dusk'}
+            aria-label={theme === 'dark' ? 'switch to light mode' : 'switch to dark mode'}
+            style={{
+              width: '100%',
+              fontSize: wide ? 11 : 14,
+              padding: wide ? '4px 8px' : '4px 0',
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              color: 'var(--ink-soft)',
+            }}
+          >
+            {wide ? (theme === 'dark' ? 'sun ☀' : 'dusk ☾') : theme === 'dark' ? '☀' : '☾'}
+          </button>
+        )}
       </div>
     </aside>
   );

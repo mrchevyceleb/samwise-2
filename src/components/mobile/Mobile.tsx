@@ -5,6 +5,7 @@ import {
   UserMessage,
   ToolCall,
 } from '../primitives/chat';
+import { Markdown } from '../primitives/Markdown';
 
 function timeLabel(ts: number): string {
   const d = new Date(ts);
@@ -29,10 +30,18 @@ export function MobileThreshold({
   repos,
   reposLoading,
   onSetForth,
+  theme = 'light',
+  onToggleTheme,
 }: {
   repos: Repo[];
   reposLoading?: boolean;
-  onSetForth: (params: { companion: CompanionId; repo?: Repo }) => void;
+  onSetForth: (params: {
+    companion: CompanionId;
+    repo?: Repo;
+    initialMessage?: string;
+  }) => void;
+  theme?: 'light' | 'dark';
+  onToggleTheme?: () => void;
 }) {
   const [companion, setCompanion] = useState<CompanionId>('claude');
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
@@ -60,8 +69,34 @@ export function MobileThreshold({
         alignItems: 'center',
         padding: '28px 22px 40px',
         overflowY: 'auto',
+        position: 'relative',
       }}
     >
+      {onToggleTheme && (
+        <button
+          onClick={onToggleTheme}
+          aria-label={theme === 'dark' ? 'switch to light mode' : 'switch to dark mode'}
+          style={{
+            position: 'absolute',
+            top: 16,
+            right: 18,
+            width: 32,
+            height: 32,
+            borderRadius: '50%',
+            border: '1px solid var(--rule-soft)',
+            background: 'var(--vellum)',
+            color: 'var(--ink-soft)',
+            fontFamily: 'var(--serif-display)',
+            fontSize: 16,
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {theme === 'dark' ? '☀' : '☾'}
+        </button>
+      )}
       <div
         style={{
           padding: 5,
@@ -138,6 +173,13 @@ export function MobileThreshold({
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || !query.trim()) return;
+              e.preventDefault();
+              const text = query.trim();
+              setQuery('');
+              onSetForth({ companion, repo: effectiveRepo, initialMessage: text });
+            }}
             placeholder="speak, or pick below…"
             style={{
               flex: 1,
@@ -477,7 +519,7 @@ export function MobileConversation({
           if (b.kind === 'text') {
             return (
               <SamMessage key={b.id} time={timeLabel(b.ts)}>
-                <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{b.text}</p>
+                <Markdown>{b.text}</Markdown>
               </SamMessage>
             );
           }

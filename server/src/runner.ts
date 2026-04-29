@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import { ASSISTANT_HUB_PATH } from './config.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
+import { CodexSession, getOrCreateCodexSession } from './codex-runner.ts';
 
 // One persistent `claude` process per (cli, repoPath) pair, fed JSON over
 // stdin and reading JSONL events from stdout. This kills the per-turn startup
@@ -58,6 +59,16 @@ class ClaudeSession {
     this.key = `${cli}|${cwd}`;
     this.pendingResumeId = resumeId;
     this.ready = new Promise<boolean>((res) => { this.resolveReady = res; });
+
+    // Quiet-ready: the modern claude binary doesn't emit system/init until it
+    // receives its first stdin message. Per Banana IDE: if the process is
+    // alive after a short window and stderr is clean, treat it as ready so
+    // the first send can go through. Init will fire later, after that send.
+    setTimeout(() => {
+      if (!this.initSeen && !this.exitedBeforeInit && !this.spawnError) {
+        this.resolveReady(true);
+      }
+    }, 2000).unref();
 
     const args: string[] = [
       '-p',
@@ -203,12 +214,15 @@ function keyOf(cli: CliKind, cwd: string): string {
   return `${cli}|${cwd}`;
 }
 
+// Returned by getOrCreateSession — common interface across both runners.
+export type AnySession = ClaudeSession | CodexSession;
+
 export async function getOrCreateSession(opts: {
   cli: CliKind;
   repoPath: string;
-}): Promise<ClaudeSession> {
+}): Promise<AnySession> {
   if (opts.cli === 'codex') {
-    throw new Error('codex companion not yet wired — coming in a follow-up');
+    return getOrCreateCodexSession({ repoPath: opts.repoPath });
   }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd);

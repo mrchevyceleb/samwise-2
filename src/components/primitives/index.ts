@@ -1,4 +1,5 @@
 export { SamPortrait, Lantern, Dinkus, Chip, SearchGlyph } from './atoms';
+export { Markdown } from './Markdown';
 export {
   SamMessage,
   UserMessage,

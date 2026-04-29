@@ -14,17 +14,31 @@ import {
 type ThresholdProps = {
   repos: Repo[];
   reposLoading?: boolean;
-  onSetForth: (params: { companion: CompanionId; repo?: Repo }) => void;
+  onSetForth: (params: {
+    companion: CompanionId;
+    repo?: Repo;
+    initialMessage?: string;
+  }) => void;
 };
 
 export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
   const [companion, setCompanion] = useState<CompanionId>('claude');
   // The Assistant Hub from the live repo list, if discovered. Falls back to the constant.
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
-  // Filter the assistant hub out of the regular grid so it isn't double-listed.
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
   const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
   const [query, setQuery] = useState('');
+
+  const filteredRepos = (() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return regularRepos;
+    return regularRepos.filter((r) =>
+      r.name.toLowerCase().includes(q) ||
+      r.path.toLowerCase().includes(q) ||
+      (r.hub ?? '').toLowerCase().includes(q) ||
+      (r.branch ?? '').toLowerCase().includes(q),
+    );
+  })();
 
   // Default to the first discovered repo once they load.
   if (selectedRepo === undefined && companion !== 'assistant' && regularRepos.length > 0) {
@@ -37,6 +51,25 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
   };
 
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo;
+
+  const setForth = (initialMessage?: string) => {
+    onSetForth({ companion, repo: effectiveRepo, initialMessage });
+  };
+
+  const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter' || !query.trim()) return;
+    e.preventDefault();
+    // If exactly one repo matches, treat the typed text as a repo selector and
+    // just set forth without a message. Otherwise treat it as the first message.
+    if (filteredRepos.length === 1 && query.trim() === filteredRepos[0].name) {
+      setSelectedRepo(filteredRepos[0]);
+      setQuery('');
+      onSetForth({ companion, repo: filteredRepos[0] });
+      return;
+    }
+    setForth(query.trim());
+    setQuery('');
+  };
 
   return (
     <div
@@ -133,6 +166,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleSearchKey}
             placeholder="type to begin, or pick from below"
             style={{
               flex: 1,
@@ -224,24 +258,64 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
               scanning the shelves…
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
-              {regularRepos.map((r) => (
-                <RepoPick
-                  key={r.path}
-                  repo={r}
-                  selected={r.path === selectedRepo?.path}
-                  onClick={() => setSelectedRepo(r)}
-                />
-              ))}
-              {SPECIAL_REPOS.map((r) => (
-                <RepoPick
-                  key={r.path}
-                  repo={r}
-                  selected={false}
-                  onClick={() => setSelectedRepo(undefined)}
-                />
-              ))}
-            </div>
+            <>
+              {filteredRepos.length === 0 ? (
+                <div
+                  className="sw-folio"
+                  style={{ padding: '8px 4px', fontStyle: 'italic' }}
+                >
+                  no repo matches "{query}"
+                </div>
+              ) : (
+                groupByHub(filteredRepos).map(({ hub, repos: hubRepos }) => (
+                  <div key={hub} style={{ marginBottom: 8 }}>
+                    {hub && (
+                      <div
+                        className="sw-folio"
+                        style={{
+                          fontSize: 10.5,
+                          fontStyle: 'italic',
+                          color: 'var(--ink-faint)',
+                          padding: '4px 12px 2px',
+                          letterSpacing: '0.04em',
+                        }}
+                      >
+                        {hub}
+                      </div>
+                    )}
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                      {hubRepos.map((r) => (
+                        <RepoPick
+                          key={r.path}
+                          repo={r}
+                          selected={r.path === selectedRepo?.path}
+                          onClick={() => setSelectedRepo(r)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
+              {!query && (
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: 4,
+                    marginTop: 6,
+                  }}
+                >
+                  {SPECIAL_REPOS.map((r) => (
+                    <RepoPick
+                      key={r.path}
+                      repo={r}
+                      selected={false}
+                      onClick={() => setSelectedRepo(undefined)}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -262,7 +336,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
           <button
             className="sw-btn sw-btn-primary"
             style={{ fontSize: 13, padding: '6px 18px' }}
-            onClick={() => onSetForth({ companion, repo: effectiveRepo })}
+            onClick={() => setForth(query.trim() || undefined)}
           >
             Set forth
           </button>
@@ -427,11 +501,19 @@ function CompanionPick({
   );
 }
 
-function displayPath(repo: Repo): string {
-  if (repo.italic) return repo.name; // SPECIAL_REPOS use name as the visible label
-  // Strip /Users/<me>/ prefix to keep it tidy.
-  const stripped = repo.path.replace(/^\/Users\/[^/]+\//, '~/');
-  return stripped;
+// Bucket repos by hub, preserving the order in which hubs were first seen.
+function groupByHub(repos: Repo[]): Array<{ hub: string; repos: Repo[] }> {
+  const order: string[] = [];
+  const buckets = new Map<string, Repo[]>();
+  for (const r of repos) {
+    const key = r.hub ?? '';
+    if (!buckets.has(key)) {
+      order.push(key);
+      buckets.set(key, []);
+    }
+    buckets.get(key)!.push(r);
+  }
+  return order.map((hub) => ({ hub, repos: buckets.get(hub)! }));
 }
 
 function RepoPick({
@@ -439,7 +521,7 @@ function RepoPick({
   selected,
   onClick,
 }: { repo: Repo; selected: boolean; onClick: () => void }) {
-  const { branch, recent, pinned, italic, awaits } = repo;
+  const { branch, pinned, italic, awaits } = repo;
   return (
     <div
       onClick={onClick}
@@ -450,13 +532,14 @@ function RepoPick({
         cursor: 'pointer',
         display: 'flex',
         alignItems: 'center',
-        gap: 10,
+        gap: 8,
         background: selected ? 'rgba(184,89,58,0.08)' : 'transparent',
         borderLeft: pinned
           ? '2px solid var(--ember)'
           : awaits
             ? '2px solid var(--gold)'
             : '2px solid transparent',
+        minWidth: 0,
       }}
     >
       {!italic && (
@@ -471,7 +554,7 @@ function RepoPick({
       )}
       <span
         style={{
-          fontSize: 12,
+          fontSize: 13,
           color: italic ? 'var(--ink-soft)' : 'var(--ink)',
           fontStyle: italic ? 'italic' : 'normal',
           fontFamily: italic ? 'var(--serif-display)' : 'var(--mono)',
@@ -482,7 +565,7 @@ function RepoPick({
           flex: '1 1 0',
         }}
       >
-        {displayPath(repo)}
+        {repo.name}
       </span>
       {branch && (
         <span
@@ -494,21 +577,7 @@ function RepoPick({
             flexShrink: 0,
           }}
         >
-          · {branch}
-        </span>
-      )}
-      <span style={{ marginLeft: 'auto', flexShrink: 0 }}></span>
-      {recent && (
-        <span
-          className="sw-folio"
-          style={{
-            whiteSpace: 'nowrap',
-            flexShrink: 0,
-            color: awaits ? 'var(--gold)' : undefined,
-            fontStyle: awaits ? 'italic' : undefined,
-          }}
-        >
-          {recent}
+          {branch}
         </span>
       )}
     </div>

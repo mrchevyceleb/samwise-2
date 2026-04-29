@@ -140,8 +140,14 @@ function summarize(s: string): string {
   return `${firstLine.slice(0, 80)}…`;
 }
 
-export function useChat(opts: { repo: Repo | undefined; cli: CompanionId; enabled: boolean }) {
-  const { repo, cli, enabled } = opts;
+export function useChat(opts: {
+  repo: Repo | undefined;
+  cli: CompanionId;
+  enabled: boolean;
+  initialMessage?: string | null;
+  onInitialMessageSent?: () => void;
+}) {
+  const { repo, cli, enabled, initialMessage, onInitialMessageSent } = opts;
   const [blocks, setBlocks] = useState<ChatBlock[]>([]);
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -149,10 +155,13 @@ export function useChat(opts: { repo: Repo | undefined; cli: CompanionId; enable
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const teardownRef = useRef(false);
-  // Mutating this from the reducer is intentional — the reducer is invoked
-  // exactly once per event in onmessage (not via React's reducer machinery),
-  // so this is safe and avoids putting the live turn id into render state.
   const turnIdRef = useRef('');
+  // Mirror the initial message into a ref so the WS onmessage handler can
+  // read the latest value without re-subscribing every render.
+  const initialMessageRef = useRef<string | null>(initialMessage ?? null);
+  initialMessageRef.current = initialMessage ?? null;
+  const onInitialMessageSentRef = useRef(onInitialMessageSent);
+  onInitialMessageSentRef.current = onInitialMessageSent;
 
   useEffect(() => {
     if (!enabled || !repo) return;
@@ -178,7 +187,21 @@ export function useChat(opts: { repo: Repo | undefined; cli: CompanionId; enable
         let msg: any;
         try { msg = JSON.parse(String(e.data)); }
         catch { return; }
-        if (msg.type === 'ready') setStatus('ready');
+        if (msg.type === 'ready') {
+          setStatus('ready');
+          // Send a pending first message (typed straight into the threshold)
+          // the moment the server says ready, not via a downstream effect.
+          const pending = initialMessageRef.current;
+          if (pending && ws.readyState === WebSocket.OPEN) {
+            initialMessageRef.current = null;
+            setBlocks((prev) => [
+              ...prev,
+              { kind: 'user', id: id(), text: pending, ts: Date.now() },
+            ]);
+            ws.send(JSON.stringify({ type: 'send', text: pending }));
+            onInitialMessageSentRef.current?.();
+          }
+        }
         else if (msg.type === 'turnStart') setStatus('streaming');
         else if (msg.type === 'turnEnd') setStatus('ready');
         else if (msg.type === 'sessionClosed') {

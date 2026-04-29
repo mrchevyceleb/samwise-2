@@ -11,9 +11,10 @@ import { ensureStateDir } from './sessions.ts';
 import {
   getOrCreateSession,
   shutdownAllSessions,
+  type AnySession,
   type CliKind,
-  type ClaudeSession,
 } from './runner.ts';
+import { shutdownAllCodexSessions } from './codex-runner.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = resolve(HERE, '..', '..', 'dist');
@@ -63,7 +64,9 @@ type ClientSend = { type: 'send'; text: string };
 type ClientMsg = ClientHello | ClientSend;
 
 wss.on('connection', (ws) => {
-  let session: ClaudeSession | null = null;
+  // Stored as a promise so sends arriving while the spawn is still in flight
+  // can `await` it instead of failing with "no session — send hello first".
+  let sessionPromise: Promise<AnySession> | null = null;
   let unsubscribe: (() => void) | null = null;
   let busy = false;
 
@@ -81,32 +84,32 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'hello') {
+      sessionPromise = getOrCreateSession({ cli: msg.cli, repoPath: msg.repo });
       try {
-        session = await getOrCreateSession({ cli: msg.cli, repoPath: msg.repo });
+        const session = await sessionPromise;
+        unsubscribe?.();
+        unsubscribe = session.subscribe((sev) => {
+          if (sev.type === 'event') {
+            safeSend({ type: 'stream', event: sev.event });
+          } else if (sev.type === 'turnEnd') {
+            busy = false;
+            safeSend({ type: 'turnEnd', sessionId: sev.sessionId });
+          } else if (sev.type === 'error') {
+            safeSend({ type: 'error', message: sev.message });
+          } else if (sev.type === 'closed') {
+            safeSend({ type: 'sessionClosed', code: sev.code });
+          }
+        });
+        safeSend({ type: 'ready', cli: msg.cli, repo: msg.repo });
       } catch (e) {
+        sessionPromise = null;
         safeSend({ type: 'error', message: String((e as Error).message) });
-        return;
       }
-      // Wire stream → ws.
-      unsubscribe?.();
-      unsubscribe = session.subscribe((sev) => {
-        if (sev.type === 'event') {
-          safeSend({ type: 'stream', event: sev.event });
-        } else if (sev.type === 'turnEnd') {
-          busy = false;
-          safeSend({ type: 'turnEnd', sessionId: sev.sessionId });
-        } else if (sev.type === 'error') {
-          safeSend({ type: 'error', message: sev.message });
-        } else if (sev.type === 'closed') {
-          safeSend({ type: 'sessionClosed', code: sev.code });
-        }
-      });
-      safeSend({ type: 'ready', cli: msg.cli, repo: msg.repo });
       return;
     }
 
     if (msg.type === 'send') {
-      if (!session) {
+      if (!sessionPromise) {
         safeSend({ type: 'error', message: 'no session — send hello first' });
         return;
       }
@@ -116,7 +119,14 @@ wss.on('connection', (ws) => {
       }
       busy = true;
       safeSend({ type: 'turnStart' });
-      session.send(msg.text);
+      try {
+        const session = await sessionPromise;
+        session.send(msg.text);
+      } catch (e) {
+        busy = false;
+        safeSend({ type: 'error', message: String((e as Error).message) });
+        safeSend({ type: 'turnEnd' });
+      }
       return;
     }
   });
@@ -137,6 +147,7 @@ server.listen(PORT, () => {
 
 const tearDown = () => {
   shutdownAllSessions();
+  shutdownAllCodexSessions();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();
 };

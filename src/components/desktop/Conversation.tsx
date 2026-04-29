@@ -6,6 +6,7 @@ import {
   ToolCall,
   ChatInput,
 } from '../primitives/chat';
+import { Markdown } from '../primitives/Markdown';
 import type { ChatBlock } from '../../data/types';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
@@ -47,6 +48,7 @@ export function Conversation({
   status,
   errorText,
   onSend,
+  onBack,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -66,6 +68,38 @@ export function Conversation({
         minWidth: 0,
       }}
     >
+      {/* Top bar with a clear way home. */}
+      {onBack && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            padding: '12px 24px',
+            borderBottom: '1px solid var(--rule-soft)',
+            background: 'var(--vellum)',
+          }}
+        >
+          <button
+            onClick={onBack}
+            style={{
+              background: 'transparent',
+              border: 0,
+              padding: 0,
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 14,
+              color: 'var(--ember)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            ← the threshold
+          </button>
+        </div>
+      )}
+
       <div
         ref={scrollRef}
         className="sw-scroll"
@@ -195,7 +229,7 @@ function renderBlocks(blocks: ChatBlock[]) {
     if (b.kind === 'text') {
       return (
         <SamMessage key={b.id} time={timeLabel(b.ts)}>
-          <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{b.text}</p>
+          <Markdown>{b.text}</Markdown>
         </SamMessage>
       );
     }
