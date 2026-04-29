@@ -16,6 +16,32 @@ import { useTheme } from './hooks/useTheme';
 
 type View = 'threshold' | 'conversation';
 
+// Persist the active conversation across page reloads so a phone lock /
+// browser refresh / network blip lands you back where you were and the
+// server-side event buffer can replay the missed turn output.
+const ACTIVE_KEY = 'samwise-2:active';
+type ActiveSession = { cli: CompanionId; repoPath: string };
+
+function readActive(): ActiveSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(ACTIVE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    if (
+      v && (v.cli === 'claude' || v.cli === 'codex' || v.cli === 'assistant')
+      && typeof v.repoPath === 'string'
+    ) return v;
+    return null;
+  } catch { return null; }
+}
+
+function writeActive(v: ActiveSession | null): void {
+  if (typeof window === 'undefined') return;
+  if (v) localStorage.setItem(ACTIVE_KEY, JSON.stringify(v));
+  else localStorage.removeItem(ACTIVE_KEY);
+}
+
 const COMPANION_LABEL: Record<CompanionId, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
@@ -32,9 +58,14 @@ export default function App() {
   const [chronicleTick, setChronicleTick] = useState(0);
   const chronicle = useChronicle(chronicleTick);
 
-  const [view, setView] = useState<View>('threshold');
-  const [companion, setCompanion] = useState<CompanionId>('claude');
+  // Restore the last active conversation if there was one. We start in the
+  // threshold view; once /api/repos resolves we bind the saved repoPath to
+  // the matching Repo object and switch to conversation.
+  const initialActive = readActive();
+  const [view, setView] = useState<View>(initialActive ? 'conversation' : 'threshold');
+  const [companion, setCompanion] = useState<CompanionId>(initialActive?.cli ?? 'claude');
   const [repo, setRepo] = useState<Repo | undefined>(undefined);
+  const restorePathRef = useRef<string | null>(initialActive?.repoPath ?? null);
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
@@ -47,6 +78,22 @@ export default function App() {
     initialMessage: pendingFirstMessage,
     onInitialMessageSent: () => setPendingFirstMessage(null),
   });
+
+  // Once repos load, bind the restore-target path to a real Repo object.
+  useEffect(() => {
+    if (!restorePathRef.current || repo) return;
+    if (repos.length === 0) return;
+    const target = repos.find((r) => r.path === restorePathRef.current);
+    if (target) {
+      setRepo(target);
+      restorePathRef.current = null;
+    } else if (!reposLoading) {
+      // Repo was removed since we saved the active session — drop it.
+      restorePathRef.current = null;
+      writeActive(null);
+      setView('threshold');
+    }
+  }, [repos, reposLoading, repo]);
 
   // Refresh the chronicle whenever a turn finishes — Sam may have just
   // written a new session file we haven't seen.
@@ -79,6 +126,13 @@ export default function App() {
     setView('conversation');
     setErrandTitle('a fresh errand');
     setPendingFirstMessage(initialMessage ?? null);
+    if (r) writeActive({ cli: c, repoPath: r.path });
+    else writeActive(null);
+  };
+
+  const goToThreshold = () => {
+    setView('threshold');
+    writeActive(null);
   };
 
   const repoLabel = repo
@@ -107,7 +161,7 @@ export default function App() {
             status={chat.status}
             errorText={chat.error}
             usage={chat.usage}
-            onBack={() => setView('threshold')}
+            onBack={goToThreshold}
             onOpenChronicle={() => setChronicleOpen(true)}
             onSend={chat.send}
             onFreshStart={chat.freshStart}
@@ -169,7 +223,7 @@ export default function App() {
             errorText={chat.error}
             usage={chat.usage}
             onSend={chat.send}
-            onBack={() => setView('threshold')}
+            onBack={goToThreshold}
             onFreshStart={chat.freshStart}
           />
         )}

@@ -1,6 +1,9 @@
 import { spawn } from 'node:child_process';
-import type { CliKind, SessionEvent } from './runner.ts';
+import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
+import { notifyTurnEnd } from './notify.ts';
+
+const EVENT_BUFFER_SIZE = 300;
 
 // Codex doesn't have a stdin-streaming mode (the way claude does with
 // --input-format stream-json), so each turn spawns a fresh `codex exec --json`
@@ -9,7 +12,7 @@ import { getSessionId, setSessionId } from './sessions.ts';
 // vocabulary the front-end already understands, so the reducer doesn't need
 // to know there's a second CLI behind the curtain.
 
-export type Listener = (msg: SessionEvent) => void;
+export type Listener = (e: SeqEvent) => void;
 
 let nextSyntheticId = 1;
 const synth = (prefix: string) => `${prefix}_${nextSyntheticId++}`;
@@ -22,6 +25,8 @@ export class CodexSession {
   private threadId: string | null = null;
   private busy = false;
   private dead = false;
+  private eventLog: SeqEvent[] = [];
+  private nextSeq = 1;
   /** Codex doesn't need a warmup turn — ready immediately. */
   readonly ready: Promise<boolean> = Promise.resolve(true);
 
@@ -31,9 +36,18 @@ export class CodexSession {
     this.threadId = threadId;
   }
 
-  subscribe(fn: Listener): () => void {
+  subscribe(fn: Listener, sinceSeq = -1): () => void {
+    if (sinceSeq >= 0) {
+      for (const se of this.eventLog) {
+        if (se.seq > sinceSeq) fn(se);
+      }
+    }
     this.listeners.add(fn);
     return () => { this.listeners.delete(fn); };
+  }
+
+  latestSeq(): number {
+    return this.nextSeq - 1;
   }
 
   isAlive(): boolean {
@@ -53,6 +67,9 @@ export class CodexSession {
       return;
     }
     this.busy = true;
+    const turnStartedAt = Date.now();
+    // Echo for reconnect replay (codex's events don't re-emit the user prompt).
+    this.emit({ type: 'event', event: { type: '_user_echo', text, ts: Date.now() } });
 
     const args: string[] = ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox'];
     if (this.threadId) {
@@ -119,6 +136,12 @@ export class CodexSession {
         await setSessionId('codex', this.cwd, this.threadId);
       }
       this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
+      void notifyTurnEnd({
+        cli: 'codex',
+        repoPath: this.cwd,
+        preview: this.lastAgentMessage(),
+        durationMs: Date.now() - turnStartedAt,
+      });
     });
 
     child.on('error', (err) => {
@@ -130,12 +153,32 @@ export class CodexSession {
   // ── private ────────────────────────────────────────────────
 
   private emit(msg: SessionEvent): void {
-    for (const fn of this.listeners) fn(msg);
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    this.eventLog.push(se);
+    if (this.eventLog.length > EVENT_BUFFER_SIZE) {
+      this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
+    }
+    for (const fn of this.listeners) fn(se);
   }
 
   /** Forward an event already in claude stream-json shape. */
   private emitClaudeEvent(event: any): void {
     this.emit({ type: 'event', event });
+  }
+
+  /** Latest agent_message text from this turn — used for telegram preview. */
+  private lastAgentMessage(): string {
+    for (let i = this.eventLog.length - 1; i >= 0; i--) {
+      const sev = this.eventLog[i].ev;
+      if (sev.type === 'event') {
+        const ev: any = sev.event;
+        if (ev?.type === 'stream_event' && ev.event?.type === 'content_block_delta') {
+          const d = ev.event.delta;
+          if (d?.type === 'text_delta' && typeof d.text === 'string') return d.text;
+        }
+      }
+    }
+    return '';
   }
 
   private handleCodexEvent(

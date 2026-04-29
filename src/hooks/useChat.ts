@@ -29,6 +29,19 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
     return reduce(blocks, ev.event, turnIdRef);
   }
 
+  // Server-injected echo of the user's prompt — keeps the user's message in
+  // the visible thread when a client reconnects and replays the buffer.
+  if (ev.type === '_user_echo' && typeof ev.text === 'string') {
+    // Dedupe: if the optimistic local user block was already added by send(),
+    // don't double up.
+    const lastUser = [...blocks].reverse().find((b) => b.kind === 'user');
+    if (lastUser && lastUser.kind === 'user' && lastUser.text === ev.text) {
+      return blocks;
+    }
+    const ts = typeof ev.ts === 'number' ? ev.ts : Date.now();
+    return [...blocks, { kind: 'user', id: id(), text: ev.text, ts }];
+  }
+
   if (ev.type === 'message_start') {
     // New assistant turn. Mint a fresh turnId; close out any open blocks from
     // a prior turn so their cbIndex correlation can no longer match.
@@ -176,6 +189,8 @@ export function useChat(opts: {
   initialMessageRef.current = initialMessage ?? null;
   const onInitialMessageSentRef = useRef(onInitialMessageSent);
   onInitialMessageSentRef.current = onInitialMessageSent;
+  /** Latest event seq received from server. Sent on reconnect for replay. */
+  const lastSeqRef = useRef(-1);
 
   useEffect(() => {
     if (!enabled || !repo) return;
@@ -184,6 +199,10 @@ export function useChat(opts: {
     setBlocks([]);
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
+    // Use 0 so the server replays its entire buffer on first connect — that's
+    // how we get back the in-flight turn after a phone lock or page reload.
+    // For a brand-new session the buffer is empty, so this is a no-op.
+    lastSeqRef.current = 0;
 
     const connect = () => {
       if (teardownRef.current) return;
@@ -195,12 +214,24 @@ export function useChat(opts: {
 
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;
-        ws.send(JSON.stringify({ type: 'hello', cli, repo: repo.path }));
+        ws.send(JSON.stringify({
+          type: 'hello',
+          cli,
+          repo: repo.path,
+          sinceSeq: lastSeqRef.current,
+        }));
       };
       ws.onmessage = (e) => {
         let msg: any;
         try { msg = JSON.parse(String(e.data)); }
         catch { return; }
+        // Track every server event's sequence so reconnect can resume.
+        if (typeof msg.seq === 'number' && msg.seq > lastSeqRef.current) {
+          lastSeqRef.current = msg.seq;
+        }
+        if (typeof msg.latestSeq === 'number' && msg.latestSeq > lastSeqRef.current) {
+          lastSeqRef.current = msg.latestSeq;
+        }
         if (msg.type === 'ready') {
           setStatus('ready');
           // Send a pending first message (typed straight into the threshold)
@@ -224,6 +255,7 @@ export function useChat(opts: {
           setError(null);
           setStatus('ready');
           turnIdRef.current = '';
+          lastSeqRef.current = -1;
         }
         else if (msg.type === 'sessionClosed') {
           setError('Sam closed the session — say something to wake him.');

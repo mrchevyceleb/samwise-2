@@ -4,6 +4,7 @@ import type { Readable, Writable } from 'node:stream';
 import { ASSISTANT_HUB_PATH } from './config.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
 import { CodexSession, getOrCreateCodexSession } from './codex-runner.ts';
+import { notifyTurnEnd } from './notify.ts';
 
 // One persistent `claude` process per (cli, repoPath) pair, fed JSON over
 // stdin and reading JSONL events from stdout. This kills the per-turn startup
@@ -34,13 +35,22 @@ const ASSISTANT_AGENT_PROMPT =
   "You're working inside the ASSISTANT-HUB repo, which contains his task system, " +
   "client dashboards, and personal automation. Address him directly. Stay terse.";
 
+// Each session keeps a rolling tail of recent events so a reconnecting client
+// gets the in-flight turn's output even if its WS dropped mid-stream.
+const EVENT_BUFFER_SIZE = 300;
+
+export type SeqEvent = { seq: number; ev: SessionEvent };
+
 class ClaudeSession {
   readonly key: string;
   readonly cli: CliKind;
   readonly cwd: string;
   private child: ChildProcessByStdio<Writable, Readable, Readable>;
   private stdoutBuf = '';
-  private listeners = new Set<Listener>();
+  private listeners = new Set<(e: SeqEvent) => void>();
+  /** Rolling tail of recent events (with sequence numbers) for reconnect replay. */
+  private eventLog: SeqEvent[] = [];
+  private nextSeq = 1;
   /** session_id we asked the CLI to resume (cleared once the init event arrives). */
   private pendingResumeId: string | null = null;
   /** session_id reported by the most recent init event. Persisted on every change. */
@@ -112,12 +122,30 @@ class ClaudeSession {
     });
   }
 
-  subscribe(fn: Listener): () => void {
+  /**
+   * Subscribe to live events. If `sinceSeq` is provided, immediately replays
+   * any buffered events with seq > sinceSeq before returning. Pass 0 for
+   * "give me everything in the buffer."
+   */
+  subscribe(fn: (e: SeqEvent) => void, sinceSeq = -1): () => void {
+    if (sinceSeq >= 0) {
+      for (const se of this.eventLog) {
+        if (se.seq > sinceSeq) fn(se);
+      }
+    }
     this.listeners.add(fn);
     return () => {
       this.listeners.delete(fn);
     };
   }
+
+  /** The latest sequence number (clients can send this on reconnect). */
+  latestSeq(): number {
+    return this.nextSeq - 1;
+  }
+
+  /** Most recent turn start (ms) — used for telegram-ping duration. */
+  private turnStartedAt: number | null = null;
 
   /** Send a user message into the running CLI as one turn. */
   send(text: string): void {
@@ -125,6 +153,11 @@ class ClaudeSession {
       this.emit({ type: 'error', message: 'session has exited' });
       return;
     }
+    this.turnStartedAt = Date.now();
+    // Echo the user message into our event log so reconnecting clients can
+    // replay the full conversation, not just Sam's responses (claude doesn't
+    // re-emit the user turn in its stream).
+    this.emit({ type: 'event', event: { type: '_user_echo', text, ts: Date.now() } });
     const payload = JSON.stringify({
       type: 'user',
       message: { role: 'user', content: text },
@@ -153,7 +186,12 @@ class ClaudeSession {
   // ── private ────────────────────────────────────────────────
 
   private emit(msg: SessionEvent): void {
-    for (const fn of this.listeners) fn(msg);
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    this.eventLog.push(se);
+    if (this.eventLog.length > EVENT_BUFFER_SIZE) {
+      this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
+    }
+    for (const fn of this.listeners) fn(se);
   }
 
   private onStdout(chunk: string): void {
@@ -202,7 +240,28 @@ class ClaudeSession {
     // turn end = `result` event from the CLI
     if (ev?.type === 'result') {
       this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
+      // Best-effort Telegram ping — fire and forget.
+      const preview = typeof ev.result === 'string' ? ev.result : this.lastAssistantText();
+      const durationMs = this.turnStartedAt ? Date.now() - this.turnStartedAt : undefined;
+      this.turnStartedAt = null;
+      void notifyTurnEnd({ cli: this.cli, repoPath: this.cwd, preview, durationMs });
     }
+  }
+
+  /** Walk the event log backwards to find Sam's most recent text content. */
+  private lastAssistantText(): string {
+    for (let i = this.eventLog.length - 1; i >= 0; i--) {
+      const sev = this.eventLog[i].ev;
+      if (sev.type === 'event') {
+        const ev: any = sev.event;
+        if (ev?.type === 'assistant' && ev.message?.content) {
+          for (const c of ev.message.content as Array<any>) {
+            if (c?.type === 'text' && typeof c.text === 'string') return c.text;
+          }
+        }
+      }
+    }
+    return '';
   }
 }
 

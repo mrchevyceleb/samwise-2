@@ -160,26 +160,30 @@ export function MobileThreshold({
           overflow: 'hidden',
         }}
       >
-        <div
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!query.trim()) return;
+            const text = query.trim();
+            setQuery('');
+            onSetForth({ companion, repo: effectiveRepo, initialMessage: text });
+          }}
           style={{
             padding: '12px 14px',
             borderBottom: '1px solid var(--rule-soft)',
             display: 'flex',
             alignItems: 'center',
             gap: 8,
+            margin: 0,
           }}
         >
           <SearchGlyph size={13} />
           <input
+            type="search"
+            enterKeyHint="send"
+            inputMode="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key !== 'Enter' || !query.trim()) return;
-              e.preventDefault();
-              const text = query.trim();
-              setQuery('');
-              onSetForth({ companion, repo: effectiveRepo, initialMessage: text });
-            }}
             placeholder="speak, or pick below…"
             style={{
               flex: 1,
@@ -192,7 +196,7 @@ export function MobileThreshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
-        </div>
+        </form>
 
         <div style={{ padding: '12px 14px 6px' }}>
           <PSectionLabel folio="i" label="your companion" />
