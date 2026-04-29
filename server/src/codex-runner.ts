@@ -26,6 +26,7 @@ export class CodexSession {
   private dead = false;
   private eventLog: SeqEvent[] = [];
   private nextSeq = 1;
+  private lastActivityAtMs = Date.now();
   /** Codex doesn't need a warmup turn — ready immediately. */
   readonly ready: Promise<boolean> = Promise.resolve(true);
 
@@ -51,6 +52,14 @@ export class CodexSession {
 
   isAlive(): boolean {
     return !this.dead;
+  }
+
+  isBusy(): boolean {
+    return this.busy;
+  }
+
+  lastActivityAt(): number {
+    return this.lastActivityAtMs;
   }
 
   shutdown(): void {
@@ -145,6 +154,7 @@ export class CodexSession {
   // ── private ────────────────────────────────────────────────
 
   private emit(msg: SessionEvent): void {
+    this.lastActivityAtMs = Date.now();
     const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
     this.eventLog.push(se);
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
@@ -278,6 +288,20 @@ export class CodexSession {
 
 /** Manager keyed by cwd — same semantics as the claude session map. */
 const codexSessions = new Map<string, CodexSession>();
+
+export function activeCodexSessions(): {
+  cli: CliKind;
+  cwd: string;
+  busy: boolean;
+  lastActivityAt: number;
+}[] {
+  return Array.from(codexSessions.values()).map((s) => ({
+    cli: 'codex',
+    cwd: s.cwd,
+    busy: s.isBusy(),
+    lastActivityAt: s.lastActivityAt(),
+  }));
+}
 
 export async function getOrCreateCodexSession(opts: { repoPath: string }): Promise<CodexSession> {
   const cwd = opts.repoPath;

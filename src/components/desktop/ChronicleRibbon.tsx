@@ -1,5 +1,12 @@
 import { SamPortrait } from '../primitives/atoms';
 import type { ChronicleEvent, ChronicleEventKind } from '../../data/mock';
+import type { CompanionId, LiveSession } from '../../data/types';
+
+const COMPANION_LABEL: Record<CompanionId, string> = {
+  claude: 'claude',
+  codex: 'codex',
+  assistant: 'assistant',
+};
 
 const dotColor: Record<ChronicleEventKind, string> = {
   ember: 'var(--ember)',
@@ -16,6 +23,8 @@ export function ChronicleRibbon({
   onNew,
   theme = 'light',
   onToggleTheme,
+  liveSessions = [],
+  onSelectLive,
 }: {
   events: ChronicleEvent[];
   activeId?: string | null;
@@ -24,6 +33,8 @@ export function ChronicleRibbon({
   onNew?: () => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  liveSessions?: LiveSession[];
+  onSelectLive?: (s: LiveSession) => void;
 }) {
   const wide = !collapsed;
   return (
@@ -69,6 +80,77 @@ export function ChronicleRibbon({
         )}
       </div>
       <hr className="sw-rule-solid" style={{ margin: '0 12px 10px' }} />
+
+      {liveSessions.length > 0 && (
+        <div style={{ padding: wide ? '0 12px 8px' : '0 8px 8px' }}>
+          {wide && (
+            <div
+              className="sw-smallcaps"
+              style={{ fontSize: 9, color: 'var(--ember)', marginBottom: 4, letterSpacing: '0.18em' }}
+            >
+              · now ·
+            </div>
+          )}
+          {liveSessions.map((s) => (
+            <div
+              key={`${s.cli}|${s.cwd}`}
+              onClick={() => onSelectLive?.(s)}
+              title={`${COMPANION_LABEL[s.cli]} · ${s.cwd}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: wide ? 8 : 0,
+                padding: wide ? '4px 6px' : '4px 0',
+                marginBottom: 2,
+                borderRadius: 2,
+                cursor: 'pointer',
+                background: s.busy ? 'rgba(184,89,58,0.10)' : 'transparent',
+              }}
+            >
+              <span
+                style={{
+                  width: 8, height: 8, borderRadius: '50%',
+                  background: 'var(--ember)',
+                  flexShrink: 0,
+                  animation: s.busy ? 'sw-pulse 1.4s infinite' : 'none',
+                  opacity: s.busy ? 1 : 0.5,
+                }}
+              />
+              {wide && (
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: 'var(--serif-display)',
+                      fontStyle: 'italic',
+                      fontSize: 12,
+                      color: 'var(--ink)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {s.repoName}
+                  </div>
+                  <div
+                    className="sw-mono"
+                    style={{
+                      fontSize: 9.5,
+                      color: 'var(--ink-faint)',
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {COMPANION_LABEL[s.cli]}{s.busy ? ' · tending' : ' · idle'}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          <hr className="sw-rule-solid" style={{ margin: '8px 0 4px', opacity: 0.5 }} />
+        </div>
+      )}
 
       <div
         className="sw-scroll"

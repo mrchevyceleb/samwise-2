@@ -12,10 +12,12 @@ import {
   getOrCreateSession,
   freshStart,
   shutdownAllSessions,
+  activeClaudeSessions,
   type AnySession,
   type CliKind,
 } from './runner.ts';
-import { shutdownAllCodexSessions } from './codex-runner.ts';
+import { shutdownAllCodexSessions, activeCodexSessions } from './codex-runner.ts';
+import { basename } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = resolve(HERE, '..', '..', 'dist');
@@ -36,6 +38,19 @@ app.get('/api/repos', async (_req, res) => {
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }
+});
+
+app.get('/api/live', (_req, res) => {
+  const sessions = [...activeClaudeSessions(), ...activeCodexSessions()];
+  res.json({
+    sessions: sessions.map((s) => ({
+      cli: s.cli,
+      cwd: s.cwd,
+      repoName: basename(s.cwd),
+      busy: s.busy,
+      lastActivityAt: s.lastActivityAt,
+    })),
+  });
 });
 
 app.get('/api/chronicle', async (_req, res) => {

@@ -50,6 +50,7 @@ class ClaudeSession {
   /** Rolling tail of recent events (with sequence numbers) for reconnect replay. */
   private eventLog: SeqEvent[] = [];
   private nextSeq = 1;
+  private lastActivityAtMs = Date.now();
   /** session_id we asked the CLI to resume (cleared once the init event arrives). */
   private pendingResumeId: string | null = null;
   /** session_id reported by the most recent init event. Persisted on every change. */
@@ -182,9 +183,20 @@ class ClaudeSession {
     return this.resumeFailed;
   }
 
+  /** True while this session is actively processing a turn (between user send and result event). */
+  isBusy(): boolean {
+    return this.turnStartedAt !== null;
+  }
+
+  /** Most recent activity timestamp (ms). */
+  lastActivityAt(): number {
+    return this.lastActivityAtMs;
+  }
+
   // ── private ────────────────────────────────────────────────
 
   private emit(msg: SessionEvent): void {
+    this.lastActivityAtMs = Date.now();
     const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
     this.eventLog.push(se);
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
@@ -313,6 +325,27 @@ export function shutdownAllSessions(): void {
 /** All `${cli}|${cwd}` keys currently in the manager — used by the chronicle. */
 export function activeSessionKeys(): string[] {
   return Array.from(sessions.keys());
+}
+
+export type LiveSession = {
+  cli: CliKind;
+  cwd: string;
+  busy: boolean;
+  /** ms since epoch of the most recent event (or spawn time if no events yet). */
+  lastActivityAt: number;
+};
+
+export function activeClaudeSessions(): LiveSession[] {
+  const out: LiveSession[] = [];
+  for (const s of sessions.values()) {
+    out.push({
+      cli: s.cli,
+      cwd: s.cwd,
+      busy: s.isBusy(),
+      lastActivityAt: s.lastActivityAt(),
+    });
+  }
+  return out;
 }
 
 // Drop the warm process AND the stored session id so the next spawn starts a

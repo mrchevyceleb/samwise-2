@@ -12,6 +12,7 @@ import { useIsMobile } from './hooks/useMediaQuery';
 import { useRepos } from './hooks/useRepos';
 import { useChat } from './hooks/useChat';
 import { useChronicle } from './hooks/useChronicle';
+import { useLive } from './hooks/useLive';
 import { useTheme } from './hooks/useTheme';
 
 type View = 'threshold' | 'conversation';
@@ -57,6 +58,7 @@ export default function App() {
 
   const [chronicleTick, setChronicleTick] = useState(0);
   const chronicle = useChronicle(chronicleTick);
+  const liveSessions = useLive();
 
   // Restore the last active conversation if there was one. We start in the
   // threshold view; once /api/repos resolves we bind the saved repoPath to
@@ -191,6 +193,14 @@ export default function App() {
         events={chronicle.events}
         activeId={view === 'conversation' ? activeEventId : null}
         collapsed={view === 'threshold'}
+        liveSessions={liveSessions}
+        onSelectLive={(s) => {
+          // Hop into that running session: bind to the matching repo and switch view.
+          const target = repos.find((r) => r.path === s.cwd);
+          if (target) {
+            setForth({ companion: s.cli, repo: target });
+          }
+        }}
         onSelect={(id) => {
           setActiveEventId(id);
           setView('conversation');

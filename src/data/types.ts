@@ -2,6 +2,16 @@
 
 export type CompanionId = 'claude' | 'codex' | 'assistant';
 
+// A live session reported by /api/live — used to mark "running now" entries
+// in the chronicle ribbon.
+export type LiveSession = {
+  cli: CompanionId;
+  cwd: string;
+  repoName: string;
+  busy: boolean;
+  lastActivityAt: number;
+};
+
 export type Repo = {
   path: string;        // absolute filesystem path
   name: string;        // display name (basename of path)
