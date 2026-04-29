@@ -4,7 +4,6 @@ import type { Readable, Writable } from 'node:stream';
 import { ASSISTANT_HUB_PATH } from './config.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
 import { CodexSession, getOrCreateCodexSession } from './codex-runner.ts';
-import { notifyTurnEnd } from './notify.ts';
 
 // One persistent `claude` process per (cli, repoPath) pair, fed JSON over
 // stdin and reading JSONL events from stdout. This kills the per-turn startup
@@ -240,28 +239,8 @@ class ClaudeSession {
     // turn end = `result` event from the CLI
     if (ev?.type === 'result') {
       this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
-      // Best-effort Telegram ping — fire and forget.
-      const preview = typeof ev.result === 'string' ? ev.result : this.lastAssistantText();
-      const durationMs = this.turnStartedAt ? Date.now() - this.turnStartedAt : undefined;
       this.turnStartedAt = null;
-      void notifyTurnEnd({ cli: this.cli, repoPath: this.cwd, preview, durationMs });
     }
-  }
-
-  /** Walk the event log backwards to find Sam's most recent text content. */
-  private lastAssistantText(): string {
-    for (let i = this.eventLog.length - 1; i >= 0; i--) {
-      const sev = this.eventLog[i].ev;
-      if (sev.type === 'event') {
-        const ev: any = sev.event;
-        if (ev?.type === 'assistant' && ev.message?.content) {
-          for (const c of ev.message.content as Array<any>) {
-            if (c?.type === 'text' && typeof c.text === 'string') return c.text;
-          }
-        }
-      }
-    }
-    return '';
   }
 }
 

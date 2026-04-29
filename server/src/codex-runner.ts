@@ -1,7 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
-import { notifyTurnEnd } from './notify.ts';
 
 const EVENT_BUFFER_SIZE = 300;
 
@@ -67,7 +66,6 @@ export class CodexSession {
       return;
     }
     this.busy = true;
-    const turnStartedAt = Date.now();
     // Echo for reconnect replay (codex's events don't re-emit the user prompt).
     this.emit({ type: 'event', event: { type: '_user_echo', text, ts: Date.now() } });
 
@@ -136,12 +134,6 @@ export class CodexSession {
         await setSessionId('codex', this.cwd, this.threadId);
       }
       this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
-      void notifyTurnEnd({
-        cli: 'codex',
-        repoPath: this.cwd,
-        preview: this.lastAgentMessage(),
-        durationMs: Date.now() - turnStartedAt,
-      });
     });
 
     child.on('error', (err) => {
@@ -164,21 +156,6 @@ export class CodexSession {
   /** Forward an event already in claude stream-json shape. */
   private emitClaudeEvent(event: any): void {
     this.emit({ type: 'event', event });
-  }
-
-  /** Latest agent_message text from this turn — used for telegram preview. */
-  private lastAgentMessage(): string {
-    for (let i = this.eventLog.length - 1; i >= 0; i--) {
-      const sev = this.eventLog[i].ev;
-      if (sev.type === 'event') {
-        const ev: any = sev.event;
-        if (ev?.type === 'stream_event' && ev.event?.type === 'content_block_delta') {
-          const d = ev.event.delta;
-          if (d?.type === 'text_delta' && typeof d.text === 'string') return d.text;
-        }
-      }
-    }
-    return '';
   }
 
   private handleCodexEvent(
