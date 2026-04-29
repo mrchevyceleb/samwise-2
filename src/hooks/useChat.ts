@@ -1,0 +1,234 @@
+import { useEffect, useRef, useState } from 'react';
+import type { ChatBlock, CompanionId, Repo } from '../data/types';
+
+type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
+
+let nextId = 1;
+const id = () => `b${nextId++}`;
+
+// Pure reducer — all per-turn state lives on the blocks themselves
+// (turnId + cbIndex). This keeps it safe under React Strict Mode, which
+// invokes reducers twice for purity-checking.
+function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): ChatBlock[] {
+  if (!ev || typeof ev !== 'object') return blocks;
+
+  if (ev.type === 'stream_event' && ev.event) {
+    return reduce(blocks, ev.event, turnIdRef);
+  }
+
+  if (ev.type === 'message_start') {
+    // New assistant turn. Mint a fresh turnId; close out any open blocks from
+    // a prior turn so their cbIndex correlation can no longer match.
+    turnIdRef.current = `t${nextId++}`;
+    return blocks.map((b) =>
+      b.kind === 'user' ? b : 'open' in b && b.open ? { ...b, open: false } : b,
+    );
+  }
+
+  if (ev.type === 'content_block_start') {
+    const idx: number = ev.index;
+    const cb = ev.content_block;
+    const turnId = turnIdRef.current;
+    if (cb?.type === 'text') {
+      const block: ChatBlock = {
+        kind: 'text', id: id(), text: '', ts: Date.now(),
+        turnId, cbIndex: idx, open: true,
+      };
+      return [...blocks, block];
+    }
+    if (cb?.type === 'tool_use') {
+      const block: ChatBlock = {
+        kind: 'tool', id: id(),
+        toolUseId: cb.id, tool: cb.name, args: '',
+        running: true, ts: Date.now(),
+        turnId, cbIndex: idx, open: true,
+      };
+      return [...blocks, block];
+    }
+    return blocks;
+  }
+
+  if (ev.type === 'content_block_delta') {
+    const idx: number = ev.index;
+    const turnId = turnIdRef.current;
+    const delta = ev.delta;
+    return blocks.map((b) => {
+      if (b.kind === 'user') return b;
+      if (!('cbIndex' in b) || b.cbIndex !== idx || b.turnId !== turnId || !b.open) return b;
+      if (delta?.type === 'text_delta' && b.kind === 'text' && typeof delta.text === 'string') {
+        return { ...b, text: b.text + delta.text };
+      }
+      if (delta?.type === 'input_json_delta' && b.kind === 'tool' && typeof delta.partial_json === 'string') {
+        return { ...b, args: b.args + delta.partial_json };
+      }
+      return b;
+    });
+  }
+
+  if (ev.type === 'content_block_stop') {
+    const idx: number = ev.index;
+    const turnId = turnIdRef.current;
+    return blocks.map((b) => {
+      if (b.kind === 'user') return b;
+      if (!('cbIndex' in b) || b.cbIndex !== idx || b.turnId !== turnId) return b;
+      if (b.kind === 'tool') {
+        return { ...b, args: prettifyJson(b.args), open: false };
+      }
+      return { ...b, open: false };
+    });
+  }
+
+  // Tool result: claude emits a `user` message containing tool_result content.
+  if (ev.type === 'user' && ev.message?.content) {
+    let next = blocks;
+    for (const c of ev.message.content as Array<any>) {
+      if (c?.type === 'tool_result') {
+        const summary = stringifyResult(c.content);
+        next = next.map((b) =>
+          b.kind === 'tool' && b.toolUseId === c.tool_use_id
+            ? { ...b, result: summary, running: false }
+            : b,
+        );
+      }
+    }
+    return next;
+  }
+
+  // Final `assistant` event: with content_block_* coverage above we already
+  // have everything. Skip.
+
+  return blocks;
+}
+
+function prettifyJson(raw: string): string {
+  if (!raw) return '';
+  try {
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      const entries = Object.entries(obj as Record<string, unknown>);
+      if (entries.length === 0) return '';
+      return entries
+        .slice(0, 3)
+        .map(([k, v]) => {
+          const s = typeof v === 'string' ? v : JSON.stringify(v);
+          return `${k}=${s.length > 60 ? s.slice(0, 60) + '…' : s}`;
+        })
+        .join(' ');
+    }
+    return raw;
+  } catch {
+    return raw.length > 60 ? raw.slice(0, 60) + '…' : raw;
+  }
+}
+
+function stringifyResult(content: unknown): string {
+  if (typeof content === 'string') return summarize(content);
+  if (Array.isArray(content)) {
+    const text = content
+      .map((c: any) => (c?.type === 'text' ? c.text : ''))
+      .filter(Boolean)
+      .join(' ');
+    return summarize(text);
+  }
+  return '';
+}
+
+function summarize(s: string): string {
+  const trimmed = s.trim();
+  const firstLine = trimmed.split('\n')[0];
+  if (trimmed.length <= 80) return trimmed;
+  return `${firstLine.slice(0, 80)}…`;
+}
+
+export function useChat(opts: { repo: Repo | undefined; cli: CompanionId; enabled: boolean }) {
+  const { repo, cli, enabled } = opts;
+  const [blocks, setBlocks] = useState<ChatBlock[]>([]);
+  const [status, setStatus] = useState<Status>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const teardownRef = useRef(false);
+  // Mutating this from the reducer is intentional — the reducer is invoked
+  // exactly once per event in onmessage (not via React's reducer machinery),
+  // so this is safe and avoids putting the live turn id into render state.
+  const turnIdRef = useRef('');
+
+  useEffect(() => {
+    if (!enabled || !repo) return;
+
+    teardownRef.current = false;
+    setBlocks([]);
+    turnIdRef.current = '';
+    reconnectAttemptRef.current = 0;
+
+    const connect = () => {
+      if (teardownRef.current) return;
+      const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${window.location.host}/api/ws`);
+      wsRef.current = ws;
+      setStatus('connecting');
+      setError(null);
+
+      ws.onopen = () => {
+        reconnectAttemptRef.current = 0;
+        ws.send(JSON.stringify({ type: 'hello', cli, repo: repo.path }));
+      };
+      ws.onmessage = (e) => {
+        let msg: any;
+        try { msg = JSON.parse(String(e.data)); }
+        catch { return; }
+        if (msg.type === 'ready') setStatus('ready');
+        else if (msg.type === 'turnStart') setStatus('streaming');
+        else if (msg.type === 'turnEnd') setStatus('ready');
+        else if (msg.type === 'sessionClosed') {
+          setError('Sam closed the session — say something to wake him.');
+          setStatus('ready');
+        }
+        else if (msg.type === 'stream') setBlocks((prev) => reduce(prev, msg.event, turnIdRef));
+        else if (msg.type === 'error') setError(msg.message);
+      };
+      ws.onclose = () => {
+        if (teardownRef.current) return;
+        setStatus('closed');
+        const attempt = Math.min(reconnectAttemptRef.current, 3);
+        const delay = Math.min(1000 * 2 ** attempt, 8000);
+        reconnectAttemptRef.current += 1;
+        reconnectTimerRef.current = window.setTimeout(connect, delay);
+      };
+      ws.onerror = () => {
+        setError('the line went quiet — reconnecting…');
+      };
+    };
+
+    connect();
+
+    return () => {
+      teardownRef.current = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, [enabled, repo?.path, cli]);
+
+  const send = (text: string) => {
+    const ws = wsRef.current;
+    setBlocks((prev) => [
+      ...prev,
+      { kind: 'user', id: id(), text, ts: Date.now() },
+    ]);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line — please wait a moment.');
+      return;
+    }
+    setError(null);
+    ws.send(JSON.stringify({ type: 'send', text }));
+  };
+
+  return { blocks, status, error, send };
+}

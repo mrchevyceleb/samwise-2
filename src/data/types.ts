@@ -1,0 +1,45 @@
+// Shared types between mock + real-backend data shapes.
+
+export type CompanionId = 'claude' | 'codex' | 'assistant';
+
+export type Repo = {
+  path: string;        // absolute filesystem path
+  name: string;        // display name (basename of path)
+  branch?: string;
+  hub?: string;        // grouping label (e.g., "Personal-Apps", "The Hub")
+  pinned?: boolean;
+  isAssistantHub?: boolean;
+  // Mock/UI-only flags below — synthesized from chronicle data later.
+  recent?: string;
+  awaits?: boolean;
+  italic?: boolean;
+};
+
+// Conversation block — the renderable unit in the chat thread.
+// `turnId` + `cbIndex` correlate a block back to claude's content_block_*
+// stream events so the reducer stays pure (no out-of-band Maps).
+export type ChatBlock =
+  | { kind: 'user'; id: string; text: string; ts: number }
+  | {
+      kind: 'text';
+      id: string;
+      text: string;
+      ts: number;
+      folio?: string;
+      turnId?: string;
+      cbIndex?: number;
+      open?: boolean;
+    }
+  | {
+      kind: 'tool';
+      id: string;
+      toolUseId: string;
+      tool: string;
+      args: string;
+      result?: string;
+      running: boolean;
+      ts: number;
+      turnId?: string;
+      cbIndex?: number;
+      open?: boolean;
+    };

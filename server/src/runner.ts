@@ -1,0 +1,283 @@
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import type { Readable, Writable } from 'node:stream';
+import { ASSISTANT_HUB_PATH } from './config.ts';
+import { getSessionId, setSessionId } from './sessions.ts';
+
+// One persistent `claude` process per (cli, repoPath) pair, fed JSON over
+// stdin and reading JSONL events from stdout. This kills the per-turn startup
+// tax of the previous spawn-per-message model and matches the architecture
+// proven out in Banana IDE.
+//
+// Lessons borrowed from Banana IDE:
+// - Persistent stdin/stdout stream-json so the model warms once.
+// - Detect "silent resume failure": if init reports a session_id that doesn't
+//   match the one we asked for, the CLI started a fresh session. Treat as a
+//   resume failure, drop the stale id, and let the conversation continue from
+//   the new one (don't spawn again — the user's message hasn't been sent yet).
+
+export type CliKind = 'claude' | 'codex' | 'assistant';
+
+export type StreamEvent = unknown;
+
+type Listener = (msg: SessionEvent) => void;
+
+export type SessionEvent =
+  | { type: 'event'; event: any }       // raw stream-json event from claude
+  | { type: 'turnEnd'; sessionId?: string }
+  | { type: 'closed'; code: number | null; signal: NodeJS.Signals | null }
+  | { type: 'error'; message: string };
+
+const ASSISTANT_AGENT_PROMPT =
+  "You are Samwise — a calm, literary, helpful assistant. The user is Matt. " +
+  "You're working inside the ASSISTANT-HUB repo, which contains his task system, " +
+  "client dashboards, and personal automation. Address him directly. Stay terse.";
+
+class ClaudeSession {
+  readonly key: string;
+  readonly cli: CliKind;
+  readonly cwd: string;
+  private child: ChildProcessByStdio<Writable, Readable, Readable>;
+  private stdoutBuf = '';
+  private listeners = new Set<Listener>();
+  /** session_id we asked the CLI to resume (cleared once the init event arrives). */
+  private pendingResumeId: string | null = null;
+  /** session_id reported by the most recent init event. Persisted on every change. */
+  private currentSessionId: string | null = null;
+  private resumeFailed = false;
+  private spawnError: string | null = null;
+  private initSeen = false;
+  private exitedBeforeInit = false;
+  /** Resolves true once init is received, false if the process exits before init. */
+  readonly ready: Promise<boolean>;
+  private resolveReady!: (ok: boolean) => void;
+
+  constructor(cli: CliKind, cwd: string, resumeId: string | null) {
+    this.cli = cli;
+    this.cwd = cwd;
+    this.key = `${cli}|${cwd}`;
+    this.pendingResumeId = resumeId;
+    this.ready = new Promise<boolean>((res) => { this.resolveReady = res; });
+
+    const args: string[] = [
+      '-p',
+      '--input-format', 'stream-json',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--dangerously-skip-permissions',
+    ];
+    if (resumeId) args.push('--resume', resumeId);
+    if (cli === 'assistant') args.push('--append-system-prompt', ASSISTANT_AGENT_PROMPT);
+
+    this.child = spawn('claude', args, {
+      cwd,
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }) as ChildProcessByStdio<Writable, Readable, Readable>;
+
+    this.child.stdout.setEncoding('utf8');
+    this.child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
+
+    this.child.stderr.setEncoding('utf8');
+    this.child.stderr.on('data', (chunk: string) => {
+      // Surface stderr as a soft error event but don't kill the session — the
+      // CLI prints harmless warnings here too.
+      this.emit({ type: 'error', message: chunk.trim() });
+    });
+
+    this.child.on('exit', (code, signal) => {
+      if (!this.initSeen) {
+        this.exitedBeforeInit = true;
+        this.resolveReady(false);
+      }
+      this.emit({ type: 'closed', code, signal });
+    });
+
+    this.child.on('error', (err) => {
+      this.spawnError = String(err?.message ?? err);
+      if (!this.initSeen) this.resolveReady(false);
+      this.emit({ type: 'error', message: this.spawnError });
+    });
+  }
+
+  subscribe(fn: Listener): () => void {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+
+  /** Send a user message into the running CLI as one turn. */
+  send(text: string): void {
+    if (this.child.exitCode !== null) {
+      this.emit({ type: 'error', message: 'session has exited' });
+      return;
+    }
+    const payload = JSON.stringify({
+      type: 'user',
+      message: { role: 'user', content: text },
+    });
+    try {
+      this.child.stdin.write(payload + '\n');
+    } catch (e) {
+      this.emit({ type: 'error', message: `stdin write failed: ${(e as Error).message}` });
+    }
+  }
+
+  /** Tear down the underlying process. */
+  shutdown(): void {
+    try { this.child.stdin.end(); } catch {}
+    try { this.child.kill('SIGTERM'); } catch {}
+  }
+
+  isAlive(): boolean {
+    return this.child.exitCode === null && !this.spawnError;
+  }
+
+  hasResumeFailed(): boolean {
+    return this.resumeFailed;
+  }
+
+  // ── private ────────────────────────────────────────────────
+
+  private emit(msg: SessionEvent): void {
+    for (const fn of this.listeners) fn(msg);
+  }
+
+  private onStdout(chunk: string): void {
+    this.stdoutBuf += chunk;
+    let nl = this.stdoutBuf.indexOf('\n');
+    while (nl !== -1) {
+      const line = this.stdoutBuf.slice(0, nl).trim();
+      this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
+      nl = this.stdoutBuf.indexOf('\n');
+      if (!line) continue;
+      let ev: any;
+      try { ev = JSON.parse(line); }
+      catch { continue; }
+      this.handleEvent(ev);
+    }
+  }
+
+  private handleEvent(ev: any): void {
+    // Detect init + silent-resume-failure.
+    if (ev?.type === 'system' && ev.subtype === 'init' && typeof ev.session_id === 'string') {
+      const pending = this.pendingResumeId;
+      this.pendingResumeId = null;
+      this.initSeen = true;
+      this.resolveReady(true);
+      if (pending && pending !== ev.session_id) {
+        this.resumeFailed = true;
+        this.emit({
+          type: 'error',
+          message: `Resume failed (session ${pending.slice(0, 8)}… not found). Started a fresh thread.`,
+        });
+      }
+      this.currentSessionId = ev.session_id;
+      void setSessionId(this.cli, this.cwd, ev.session_id);
+    }
+
+    // Track session_id from any event that carries it (some events carry it
+    // as well as init; persisting on every change keeps us safe across forks).
+    if (ev && typeof ev === 'object' && typeof ev.session_id === 'string'
+        && ev.session_id !== this.currentSessionId) {
+      this.currentSessionId = ev.session_id;
+      void setSessionId(this.cli, this.cwd, ev.session_id);
+    }
+
+    this.emit({ type: 'event', event: ev });
+
+    // turn end = `result` event from the CLI
+    if (ev?.type === 'result') {
+      this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
+    }
+  }
+}
+
+// ── Session manager ────────────────────────────────────────────────
+
+const sessions = new Map<string, ClaudeSession>();
+
+function keyOf(cli: CliKind, cwd: string): string {
+  return `${cli}|${cwd}`;
+}
+
+export async function getOrCreateSession(opts: {
+  cli: CliKind;
+  repoPath: string;
+}): Promise<ClaudeSession> {
+  if (opts.cli === 'codex') {
+    throw new Error('codex companion not yet wired — coming in a follow-up');
+  }
+  const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
+  const key = keyOf(opts.cli, cwd);
+
+  const existing = sessions.get(key);
+  if (existing && existing.isAlive()) return existing;
+  if (existing) sessions.delete(key);
+
+  const resumeId = (await getSessionId(opts.cli, cwd)) ?? null;
+  const session = await spawnSession(opts.cli, cwd, resumeId, key);
+  return session;
+}
+
+async function spawnSession(
+  cli: CliKind,
+  cwd: string,
+  resumeId: string | null,
+  key: string,
+  attempt = 0,
+): Promise<ClaudeSession> {
+  const session = new ClaudeSession(cli, cwd, resumeId);
+  sessions.set(key, session);
+
+  session.subscribe((msg) => {
+    if (msg.type === 'closed' && sessions.get(key) === session) {
+      sessions.delete(key);
+    }
+  });
+
+  const ok = await session.ready;
+  if (!ok) {
+    sessions.delete(key);
+    // Recover from a stale persisted session id: drop it and retry without
+    // --resume. Only one retry — if even a fresh spawn dies before init,
+    // something else is wrong.
+    if (resumeId && attempt === 0) {
+      await setSessionId(cli, cwd, ''); // clear the bad id
+      return spawnSession(cli, cwd, null, key, attempt + 1);
+    }
+    throw new Error('claude exited before initializing — check the CLI install or auth');
+  }
+  return session;
+}
+
+export function shutdownAllSessions(): void {
+  for (const s of sessions.values()) s.shutdown();
+  sessions.clear();
+}
+
+/** All `${cli}|${cwd}` keys currently in the manager — used by the chronicle. */
+export function activeSessionKeys(): string[] {
+  return Array.from(sessions.keys());
+}
+
+// Used by tests / future "force fresh thread" feature.
+export function dropSession(cli: CliKind, repoPath: string): void {
+  const cwd = cli === 'assistant' ? ASSISTANT_HUB_PATH : repoPath;
+  const key = keyOf(cli, cwd);
+  const s = sessions.get(key);
+  if (s) {
+    s.shutdown();
+    sessions.delete(key);
+  }
+}
+
+// Re-export so callers can ignore the manager and use the class type.
+export { ClaudeSession };
+
+// Convenience for index.ts: stable ids per WebSocket subscription.
+export function newSubscriberId(): string {
+  return randomUUID();
+}

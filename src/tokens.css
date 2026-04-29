@@ -1,0 +1,221 @@
+/* Samwise — shared styles */
+
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --parchment: #f1e8d6;
+  --parchment-2: #e8dcc4;
+  --parchment-3: #ddceb1;
+  --vellum: #faf4e5;
+  --ink: #2a2018;
+  --ink-2: #4a3d2e;
+  --ink-soft: #7a6a55;
+  --ink-faint: #a89881;
+  --rule: #c9b896;
+  --rule-soft: #d8c9a8;
+  --ember: #b8593a;
+  --ember-soft: #d2826a;
+  --moss: #6f8054;
+  --gold: #a48142;
+  --shadow-warm: rgba(74, 50, 24, 0.12);
+
+  --serif-display: 'Cormorant Garamond', 'EB Garamond', Georgia, serif;
+  --serif-body: 'EB Garamond', Georgia, serif;
+  --mono: 'JetBrains Mono', 'SF Mono', Menlo, monospace;
+}
+
+/* Base reset for our designs */
+.sw-root,
+.sw-root *,
+.sw-root *::before,
+.sw-root *::after {
+  box-sizing: border-box;
+}
+
+.sw-root {
+  font-family: var(--serif-body);
+  color: var(--ink);
+  background: var(--parchment);
+  font-feature-settings: "liga", "dlig", "kern";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.sw-root button { font-family: inherit; color: inherit; }
+
+/* Paper texture — subtle grain via layered radial gradients */
+.sw-paper {
+  background-color: var(--parchment);
+  background-image:
+    radial-gradient(circle at 20% 30%, rgba(180, 140, 90, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(140, 100, 60, 0.04) 0%, transparent 40%),
+    radial-gradient(circle at 50% 50%, rgba(200, 170, 120, 0.03) 0%, transparent 60%);
+}
+
+.sw-vellum {
+  background-color: var(--vellum);
+  background-image:
+    radial-gradient(circle at 30% 20%, rgba(180, 140, 90, 0.04) 0%, transparent 40%),
+    radial-gradient(circle at 70% 80%, rgba(140, 100, 60, 0.03) 0%, transparent 40%);
+}
+
+/* Drop cap helper */
+.sw-dropcap::first-letter {
+  font-family: var(--serif-display);
+  font-weight: 600;
+  font-size: 3.6em;
+  float: left;
+  line-height: 0.85;
+  padding: 0.05em 0.08em 0 0;
+  color: var(--ember);
+  font-style: italic;
+}
+
+/* Hairline rule */
+.sw-rule {
+  border: 0;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--rule) 20%, var(--rule) 80%, transparent);
+  margin: 0;
+}
+
+.sw-rule-solid { border: 0; height: 1px; background: var(--rule); }
+
+/* Ornamental divider */
+.sw-ornament {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-faint);
+  font-family: var(--serif-display);
+  font-style: italic;
+  font-size: 13px;
+}
+.sw-ornament::before,
+.sw-ornament::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+/* Smallcaps label */
+.sw-smallcaps {
+  font-family: var(--serif-body);
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.18em;
+  font-weight: 500;
+  color: var(--ink-soft);
+  font-size: 0.92em;
+}
+
+/* Folio number */
+.sw-folio {
+  font-family: var(--serif-display);
+  font-style: italic;
+  color: var(--ink-faint);
+  font-size: 12px;
+}
+
+/* Mono / terminal block */
+.sw-mono {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* Inline code in chat */
+.sw-code-inline {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: rgba(184, 89, 58, 0.08);
+  border: 1px solid rgba(184, 89, 58, 0.18);
+  border-radius: 3px;
+  padding: 0.5px 5px;
+  color: var(--ember);
+}
+
+/* Faint hatched fill (for placeholders) */
+.sw-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(74, 61, 46, 0.06) 0,
+    rgba(74, 61, 46, 0.06) 1px,
+    transparent 1px,
+    transparent 7px
+  );
+}
+
+/* Pulse for thinking dots */
+@keyframes sw-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+.sw-thinking span {
+  display: inline-block;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--ember);
+  margin-right: 4px;
+  animation: sw-pulse 1.4s ease-in-out infinite;
+}
+.sw-thinking span:nth-child(2) { animation-delay: 0.2s; }
+.sw-thinking span:nth-child(3) { animation-delay: 0.4s; }
+
+/* Flicker for the lantern */
+@keyframes sw-flicker {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  35% { opacity: 1; transform: scale(1.04); }
+  60% { opacity: 0.78; transform: scale(0.97); }
+  82% { opacity: 0.95; transform: scale(1.02); }
+}
+.sw-flame {
+  animation: sw-flicker 2.6s ease-in-out infinite;
+  transform-origin: center bottom;
+}
+
+/* Scrollbar inside artboards */
+.sw-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--rule) transparent;
+}
+.sw-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.sw-scroll::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
+.sw-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* Buttons */
+.sw-btn {
+  font-family: var(--serif-body);
+  font-size: 14px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--vellum);
+  color: var(--ink);
+  cursor: pointer;
+  letter-spacing: 0.01em;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sw-btn:hover { background: #fff; border-color: var(--ink-soft); }
+.sw-btn-primary,
+button.sw-btn.sw-btn-primary {
+  background: var(--ink);
+  color: var(--vellum) !important;
+  border-color: var(--ink);
+}
+.sw-btn-primary:hover { background: var(--ember); border-color: var(--ember); }
+
+.sw-btn-ember {
+  background: var(--ember);
+  color: var(--vellum);
+  border-color: var(--ember);
+}
+.sw-btn-ember:hover { background: #a04a30; border-color: #a04a30; }
+
+/* Subtle ink underline */
+.sw-link {
+  color: var(--ember);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(184, 89, 58, 0.4);
+  cursor: pointer;
+}
+.sw-link:hover { border-bottom-color: var(--ember); }

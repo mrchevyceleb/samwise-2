@@ -1,0 +1,41 @@
+@import url('./tokens.css');
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--parchment);
+}
+
+body {
+  font-family: var(--serif-body);
+  color: var(--ink);
+  font-feature-settings: "liga", "dlig", "kern";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+}
+
+textarea, input { font-family: inherit; }
+
+a { color: inherit; }
+
+/* The full-bleed app shell */
+.sw-app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--parchment);
+  background-image:
+    radial-gradient(ellipse at 50% 0%, rgba(184,89,58,0.06) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 100%, rgba(164,129,66,0.05) 0%, transparent 55%),
+    radial-gradient(circle at 20% 30%, rgba(180, 140, 90, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(140, 100, 60, 0.04) 0%, transparent 40%);
+}
