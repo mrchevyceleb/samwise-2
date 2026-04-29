@@ -106,9 +106,11 @@ export default function App() {
             blocks={chat.blocks}
             status={chat.status}
             errorText={chat.error}
+            usage={chat.usage}
             onBack={() => setView('threshold')}
             onOpenChronicle={() => setChronicleOpen(true)}
             onSend={chat.send}
+            onFreshStart={chat.freshStart}
           />
         )}
         <MobileChronicleSheet
@@ -165,8 +167,10 @@ export default function App() {
             blocks={chat.blocks}
             status={chat.status}
             errorText={chat.error}
+            usage={chat.usage}
             onSend={chat.send}
             onBack={() => setView('threshold')}
+            onFreshStart={chat.freshStart}
           />
         )}
       </main>

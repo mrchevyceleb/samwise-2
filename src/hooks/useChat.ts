@@ -3,6 +3,19 @@ import type { ChatBlock, CompanionId, Repo } from '../data/types';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
 
+export type ContextUsage = {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  outputTokens: number;
+  /** How full the context window is, 0..1. */
+  fraction: number;
+  /** Window size in tokens (claude default). */
+  windowTokens: number;
+};
+
+const DEFAULT_WINDOW_TOKENS = 200_000;
+
 let nextId = 1;
 const id = () => `b${nextId++}`;
 
@@ -151,6 +164,7 @@ export function useChat(opts: {
   const [blocks, setBlocks] = useState<ChatBlock[]>([]);
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [usage, setUsage] = useState<ContextUsage | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -204,11 +218,37 @@ export function useChat(opts: {
         }
         else if (msg.type === 'turnStart') setStatus('streaming');
         else if (msg.type === 'turnEnd') setStatus('ready');
+        else if (msg.type === 'freshStarted') {
+          setBlocks([]);
+          setUsage(null);
+          setError(null);
+          setStatus('ready');
+          turnIdRef.current = '';
+        }
         else if (msg.type === 'sessionClosed') {
           setError('Sam closed the session — say something to wake him.');
           setStatus('ready');
         }
-        else if (msg.type === 'stream') setBlocks((prev) => reduce(prev, msg.event, turnIdRef));
+        else if (msg.type === 'stream') {
+          setBlocks((prev) => reduce(prev, msg.event, turnIdRef));
+          // Track usage from claude's `result` events to power the context meter.
+          if (msg.event?.type === 'result' && msg.event?.usage) {
+            const u = msg.event.usage as Record<string, number | undefined>;
+            const input = u.input_tokens ?? 0;
+            const cacheRead = u.cache_read_input_tokens ?? 0;
+            const cacheCreate = u.cache_creation_input_tokens ?? 0;
+            const output = u.output_tokens ?? 0;
+            const total = input + cacheRead + cacheCreate;
+            setUsage({
+              inputTokens: input,
+              cacheReadTokens: cacheRead,
+              cacheCreateTokens: cacheCreate,
+              outputTokens: output,
+              fraction: Math.min(total / DEFAULT_WINDOW_TOKENS, 1),
+              windowTokens: DEFAULT_WINDOW_TOKENS,
+            });
+          }
+        }
         else if (msg.type === 'error') setError(msg.message);
       };
       ws.onclose = () => {
@@ -253,5 +293,15 @@ export function useChat(opts: {
     ws.send(JSON.stringify({ type: 'send', text }));
   };
 
-  return { blocks, status, error, send };
+  const freshStart = () => {
+    if (!repo) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line — please wait a moment.');
+      return;
+    }
+    ws.send(JSON.stringify({ type: 'freshStart', cli, repo: repo.path }));
+  };
+
+  return { blocks, status, error, send, freshStart, usage };
 }

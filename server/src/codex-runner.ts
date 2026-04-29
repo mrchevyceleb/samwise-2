@@ -275,3 +275,18 @@ export function shutdownAllCodexSessions(): void {
   for (const s of codexSessions.values()) s.shutdown();
   codexSessions.clear();
 }
+
+/** Drop the stored thread id so the next codex spawn starts a fresh thread. */
+export async function freshStartCodex(opts: { repoPath: string }): Promise<CodexSession> {
+  const cwd = opts.repoPath;
+  const key = `codex|${cwd}`;
+  const existing = codexSessions.get(key);
+  if (existing) {
+    existing.shutdown();
+    codexSessions.delete(key);
+  }
+  await setSessionId('codex', cwd, '');
+  const session = new CodexSession(cwd, null);
+  codexSessions.set(key, session);
+  return session;
+}

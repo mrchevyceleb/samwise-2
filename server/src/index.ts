@@ -10,6 +10,7 @@ import { readChronicle } from './chronicle.ts';
 import { ensureStateDir } from './sessions.ts';
 import {
   getOrCreateSession,
+  freshStart,
   shutdownAllSessions,
   type AnySession,
   type CliKind,
@@ -61,7 +62,8 @@ const wss = new WebSocketServer({ server, path: '/api/ws' });
 
 type ClientHello = { type: 'hello'; cli: CliKind; repo: string };
 type ClientSend = { type: 'send'; text: string };
-type ClientMsg = ClientHello | ClientSend;
+type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string };
+type ClientMsg = ClientHello | ClientSend | ClientFresh;
 
 wss.on('connection', (ws) => {
   // Stored as a promise so sends arriving while the spawn is still in flight
@@ -103,6 +105,31 @@ wss.on('connection', (ws) => {
         safeSend({ type: 'ready', cli: msg.cli, repo: msg.repo });
       } catch (e) {
         sessionPromise = null;
+        safeSend({ type: 'error', message: String((e as Error).message) });
+      }
+      return;
+    }
+
+    if (msg.type === 'freshStart') {
+      try {
+        unsubscribe?.();
+        const session = await freshStart({ cli: msg.cli, repoPath: msg.repo });
+        sessionPromise = Promise.resolve(session);
+        unsubscribe = session.subscribe((sev) => {
+          if (sev.type === 'event') {
+            safeSend({ type: 'stream', event: sev.event });
+          } else if (sev.type === 'turnEnd') {
+            busy = false;
+            safeSend({ type: 'turnEnd', sessionId: sev.sessionId });
+          } else if (sev.type === 'error') {
+            safeSend({ type: 'error', message: sev.message });
+          } else if (sev.type === 'closed') {
+            safeSend({ type: 'sessionClosed', code: sev.code });
+          }
+        });
+        busy = false;
+        safeSend({ type: 'freshStarted', cli: msg.cli, repo: msg.repo });
+      } catch (e) {
         safeSend({ type: 'error', message: String((e as Error).message) });
       }
       return;

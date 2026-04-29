@@ -356,9 +356,11 @@ export function MobileConversation({
   blocks,
   status,
   errorText,
+  usage,
   onBack,
   onOpenChronicle,
   onSend,
+  onFreshStart,
 }: {
   agent?: string;
   repo?: string;
@@ -366,9 +368,11 @@ export function MobileConversation({
   blocks: import('../../data/types').ChatBlock[];
   status: 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
   errorText?: string | null;
+  usage?: { fraction: number; inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; windowTokens: number } | null;
   onBack: () => void;
   onOpenChronicle: () => void;
   onSend?: (message: string) => void;
+  onFreshStart?: () => void;
 }) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -459,7 +463,48 @@ export function MobileConversation({
         <Chip dot tone={statusTone[status]}>
           {statusLabel[status]}
         </Chip>
+        {onFreshStart && (
+          <button
+            onClick={onFreshStart}
+            title="fresh thread"
+            aria-label="start a fresh thread"
+            style={{
+              background: 'transparent',
+              border: 0,
+              padding: 0,
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 16,
+              color: 'var(--ink-soft)',
+              cursor: 'pointer',
+              width: 24,
+              flexShrink: 0,
+            }}
+          >
+            ↻
+          </button>
+        )}
       </div>
+      {usage && (
+        <div
+          style={{
+            height: 2,
+            background: 'var(--rule-soft)',
+          }}
+        >
+          <div
+            style={{
+              width: `${Math.round(usage.fraction * 100)}%`,
+              height: '100%',
+              background:
+                usage.fraction < 0.5 ? 'var(--moss)'
+                : usage.fraction < 0.8 ? 'var(--gold)'
+                : 'var(--ember)',
+              transition: 'width 0.3s',
+            }}
+          />
+        </div>
+      )}
 
       {/* Reading column */}
       <div

@@ -18,8 +18,10 @@ type ConversationProps = {
   blocks: ChatBlock[];
   status: Status;
   errorText?: string | null;
+  usage?: { inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; fraction: number; windowTokens: number } | null;
   onSend?: (message: string) => void;
   onBack?: () => void;
+  onFreshStart?: () => void;
 };
 
 const statusToneByStatus: Record<Status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -47,8 +49,10 @@ export function Conversation({
   blocks,
   status,
   errorText,
+  usage,
   onSend,
   onBack,
+  onFreshStart,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -68,8 +72,8 @@ export function Conversation({
         minWidth: 0,
       }}
     >
-      {/* Top bar with a clear way home. */}
-      {onBack && (
+      {/* Top bar: back link + context meter + fresh-thread action. */}
+      {(onBack || onFreshStart || usage) && (
         <div
           style={{
             display: 'flex',
@@ -77,26 +81,57 @@ export function Conversation({
             padding: '12px 24px',
             borderBottom: '1px solid var(--rule-soft)',
             background: 'var(--vellum)',
+            gap: 16,
           }}
         >
-          <button
-            onClick={onBack}
-            style={{
-              background: 'transparent',
-              border: 0,
-              padding: 0,
-              fontFamily: 'var(--serif-display)',
-              fontStyle: 'italic',
-              fontSize: 14,
-              color: 'var(--ember)',
-              cursor: 'pointer',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-            }}
-          >
-            ← the threshold
-          </button>
+          {onBack && (
+            <button
+              onClick={onBack}
+              style={{
+                background: 'transparent',
+                border: 0,
+                padding: 0,
+                fontFamily: 'var(--serif-display)',
+                fontStyle: 'italic',
+                fontSize: 14,
+                color: 'var(--ember)',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+              }}
+            >
+              ← the threshold
+            </button>
+          )}
+          <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14 }}>
+            {usage && (
+              <ContextMeter
+                fraction={usage.fraction}
+                inputTokens={usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens}
+                windowTokens={usage.windowTokens}
+              />
+            )}
+            {onFreshStart && (
+              <button
+                onClick={onFreshStart}
+                title="kill the warm process, drop saved memory, start a new thread"
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--rule-soft)',
+                  borderRadius: 999,
+                  padding: '4px 12px',
+                  fontFamily: 'var(--serif-display)',
+                  fontStyle: 'italic',
+                  fontSize: 12.5,
+                  color: 'var(--ink-soft)',
+                  cursor: 'pointer',
+                }}
+              >
+                ↻ fresh thread
+              </button>
+            )}
+          </span>
         </div>
       )}
 
@@ -246,6 +281,52 @@ function renderBlocks(blocks: ChatBlock[]) {
       </SamMessage>
     );
   });
+}
+
+function ContextMeter({
+  fraction,
+  inputTokens,
+  windowTokens,
+}: { fraction: number; inputTokens: number; windowTokens: number }) {
+  const tone =
+    fraction < 0.5 ? 'var(--moss)'
+    : fraction < 0.8 ? 'var(--gold)'
+    : 'var(--ember)';
+  return (
+    <span
+      title={`${inputTokens.toLocaleString()} of ${windowTokens.toLocaleString()} tokens used`}
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
+    >
+      <span
+        style={{
+          width: 56,
+          height: 4,
+          borderRadius: 2,
+          background: 'var(--rule-soft)',
+          overflow: 'hidden',
+          display: 'inline-block',
+        }}
+      >
+        <span
+          style={{
+            display: 'block',
+            width: `${Math.round(fraction * 100)}%`,
+            height: '100%',
+            background: tone,
+            transition: 'width 0.3s',
+          }}
+        />
+      </span>
+      <span className="sw-folio" style={{ fontStyle: 'italic', whiteSpace: 'nowrap' }}>
+        {formatTokens(inputTokens)} / {formatTokens(windowTokens)}
+      </span>
+    </span>
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`;
+  return String(n);
 }
 
 function timeLabel(ts: number): string {

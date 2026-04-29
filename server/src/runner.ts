@@ -277,7 +277,25 @@ export function activeSessionKeys(): string[] {
   return Array.from(sessions.keys());
 }
 
-// Used by tests / future "force fresh thread" feature.
+// Drop the warm process AND the stored session id so the next spawn starts a
+// fresh thread. Picks up any `claude update` you've run since the process
+// last spawned.
+export async function freshStart(opts: { cli: CliKind; repoPath: string }): Promise<AnySession> {
+  if (opts.cli === 'codex') {
+    const { freshStartCodex } = await import('./codex-runner.ts');
+    return freshStartCodex({ repoPath: opts.repoPath });
+  }
+  const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
+  const key = keyOf(opts.cli, cwd);
+  const existing = sessions.get(key);
+  if (existing) {
+    existing.shutdown();
+    sessions.delete(key);
+  }
+  await setSessionId(opts.cli, cwd, ''); // drop the stored id so we don't --resume
+  return spawnSession(opts.cli, cwd, null, key);
+}
+
 export function dropSession(cli: CliKind, repoPath: string): void {
   const cwd = cli === 'assistant' ? ASSISTANT_HUB_PATH : repoPath;
   const key = keyOf(cli, cwd);
