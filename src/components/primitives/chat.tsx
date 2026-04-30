@@ -374,6 +374,8 @@ export function ChatInput({
   value,
   onChange,
   onSend,
+  onSteer,
+  busy = false,
   placeholder = 'Speak, master.',
   agent = 'Claude Code',
   repo = '',
@@ -382,6 +384,8 @@ export function ChatInput({
   value?: string;
   onChange?: (v: string) => void;
   onSend?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
+  onSteer?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
+  busy?: boolean;
   placeholder?: string;
   agent?: string;
   repo?: string;
@@ -411,10 +415,14 @@ export function ChatInput({
 
   const submit = () => {
     if (!v.trim() && images.length === 0) return;
-    onSend?.(
-      v,
-      images.length ? images.map((i) => ({ mediaType: i.mediaType, base64: i.base64 })) : undefined,
-    );
+    const imgs = images.length
+      ? images.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
+      : undefined;
+    if (busy && onSteer) {
+      onSteer(v, imgs);
+    } else {
+      onSend?.(v, imgs);
+    }
     setImages((prev) => {
       for (const img of prev) URL.revokeObjectURL(img.previewUrl);
       return [];
@@ -634,8 +642,9 @@ export function ChatInput({
           className="sw-btn sw-btn-primary"
           style={{ fontSize: 12, padding: '4px 14px' }}
           onClick={submit}
+          title={busy ? 'stop the current turn and redirect Sam with this prompt' : undefined}
         >
-          Send
+          {busy && onSteer ? 'Steer ↪' : 'Send'}
         </button>
       </div>
     </div>

@@ -400,5 +400,26 @@ export function useChat(opts: {
     ws.send(JSON.stringify({ type: 'stop', cli, repo: repo.path }));
   };
 
-  return { blocks, status, error, send, freshStart, stop, usage };
+  /** Stop the current turn and immediately fire a new prompt. The model sees
+   *  it as a fresh turn that resumes the saved session_id, so the
+   *  conversation continues but Sam stops doing whatever he was doing. */
+  const steer = (
+    text: string,
+    images?: Array<{ mediaType: string; base64: string }>,
+  ) => {
+    if (!repo) return;
+    const ws = wsRef.current;
+    setBlocks((prev) => [
+      ...prev,
+      { kind: 'user', id: id(), text, ts: Date.now() },
+    ]);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line — please wait a moment.');
+      return;
+    }
+    setError(null);
+    ws.send(JSON.stringify({ type: 'steer', cli, repo: repo.path, text, images }));
+  };
+
+  return { blocks, status, error, send, steer, freshStart, stop, usage };
 }

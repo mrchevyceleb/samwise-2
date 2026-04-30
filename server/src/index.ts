@@ -84,7 +84,14 @@ type ClientSend = {
 };
 type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string };
 type ClientStop = { type: 'stop'; cli: CliKind; repo: string };
-type ClientMsg = ClientHello | ClientSend | ClientFresh | ClientStop;
+type ClientSteer = {
+  type: 'steer';
+  cli: CliKind;
+  repo: string;
+  text: string;
+  images?: Array<{ mediaType: string; base64: string }>;
+};
+type ClientMsg = ClientHello | ClientSend | ClientFresh | ClientStop | ClientSteer;
 
 let wsCounter = 0;
 
@@ -99,9 +106,37 @@ wss.on('connection', (ws, req) => {
   let unsubscribe: (() => void) | null = null;
   let busy = false;
   let cliKind: CliKind | null = null;
+  let repoPath: string | null = null;
 
   const safeSend = (msg: object) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+  };
+
+  const dispatch = (se: { seq: number; ev: any }) => {
+    const sev = se.ev;
+    if (sev.type === 'event') {
+      safeSend({ type: 'stream', event: sev.event, seq: se.seq });
+    } else if (sev.type === 'turnEnd') {
+      busy = false;
+      safeSend({ type: 'turnEnd', sessionId: sev.sessionId, seq: se.seq });
+    } else if (sev.type === 'error') {
+      safeSend({ type: 'error', message: sev.message, seq: se.seq });
+    } else if (sev.type === 'closed') {
+      safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq });
+    }
+  };
+
+  // Bind to a freshly created session — used after stop so the next send has
+  // somewhere to land.
+  const bindSession = async (
+    promise: Promise<AnySession>,
+    sinceSeq: number = -1,
+  ): Promise<AnySession> => {
+    sessionPromise = promise;
+    const session = await promise;
+    unsubscribe?.();
+    unsubscribe = session.subscribe(dispatch, sinceSeq);
+    return session;
   };
 
   ws.on('message', async (raw) => {
@@ -115,32 +150,51 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'hello') {
       cliKind = msg.cli;
+      repoPath = msg.repo;
       const sinceSeq = typeof msg.sinceSeq === 'number' ? msg.sinceSeq : -1;
       console.log(`[ws#${wsId}] hello cli=${msg.cli} repo=${msg.repo} sinceSeq=${sinceSeq}`);
-      sessionPromise = getOrCreateSession({ cli: msg.cli, repoPath: msg.repo });
       try {
-        const session = await sessionPromise;
+        const session = await bindSession(
+          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
+          sinceSeq,
+        );
         console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()}`);
-        unsubscribe?.();
-        const dispatch = (se: { seq: number; ev: any }) => {
-          const sev = se.ev;
-          if (sev.type === 'event') {
-            safeSend({ type: 'stream', event: sev.event, seq: se.seq });
-          } else if (sev.type === 'turnEnd') {
-            busy = false;
-            safeSend({ type: 'turnEnd', sessionId: sev.sessionId, seq: se.seq });
-          } else if (sev.type === 'error') {
-            safeSend({ type: 'error', message: sev.message, seq: se.seq });
-          } else if (sev.type === 'closed') {
-            safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq });
-          }
-        };
-        unsubscribe = session.subscribe(dispatch, sinceSeq);
         safeSend({ type: 'ready', cli: msg.cli, repo: msg.repo, latestSeq: session.latestSeq() });
       } catch (e) {
         console.error(`[ws#${wsId}] hello failed:`, (e as Error).message);
         sessionPromise = null;
         safeSend({ type: 'error', message: String((e as Error).message) });
+      }
+      return;
+    }
+
+    if (msg.type === 'steer') {
+      console.log(`[ws#${wsId}] steer cli=${msg.cli} bytes=${msg.text.length}`);
+      try {
+        await interruptSession({ cli: msg.cli, repoPath: msg.repo });
+        cliKind = msg.cli;
+        repoPath = msg.repo;
+        // Spin up a fresh session immediately and fire the new prompt at it.
+        const session = await bindSession(
+          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
+        );
+        busy = true;
+        safeSend({ type: 'turnStart' });
+        if (msg.cli === 'codex' && (msg.images?.length ?? 0) > 0) {
+          safeSend({ type: 'error', message: 'codex companion does not accept images yet' });
+          busy = false;
+          safeSend({ type: 'turnEnd' });
+          return;
+        }
+        if ('send' in session) {
+          if (msg.cli === 'codex') (session as any).send(msg.text);
+          else (session as any).send(msg.text, msg.images);
+        }
+      } catch (e) {
+        console.error(`[ws#${wsId}] steer failed:`, (e as Error).message);
+        busy = false;
+        safeSend({ type: 'error', message: String((e as Error).message) });
+        safeSend({ type: 'turnEnd' });
       }
       return;
     }
@@ -151,11 +205,14 @@ wss.on('connection', (ws, req) => {
         await interruptSession({ cli: msg.cli, repoPath: msg.repo });
         busy = false;
         safeSend({ type: 'turnEnd' });
-        // Drop the cached session promise; next send will re-spawn (resuming
-        // from the saved session_id, so the conversation continues).
-        sessionPromise = null;
-        unsubscribe?.();
-        unsubscribe = null;
+        // Re-bind to a fresh session so the next send has somewhere to land
+        // (the manager kills the old process, getOrCreateSession spawns a
+        // new one resuming from the saved session_id). Without this, the
+        // next send hits "no session — send hello first" and the user is
+        // stuck.
+        cliKind = msg.cli;
+        repoPath = msg.repo;
+        await bindSession(getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }));
       } catch (e) {
         safeSend({ type: 'error', message: String((e as Error).message) });
       }
@@ -164,23 +221,11 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'freshStart') {
       try {
-        unsubscribe?.();
-        const session = await freshStart({ cli: msg.cli, repoPath: msg.repo });
-        sessionPromise = Promise.resolve(session);
-        const dispatch = (se: { seq: number; ev: any }) => {
-          const sev = se.ev;
-          if (sev.type === 'event') {
-            safeSend({ type: 'stream', event: sev.event, seq: se.seq });
-          } else if (sev.type === 'turnEnd') {
-            busy = false;
-            safeSend({ type: 'turnEnd', sessionId: sev.sessionId, seq: se.seq });
-          } else if (sev.type === 'error') {
-            safeSend({ type: 'error', message: sev.message, seq: se.seq });
-          } else if (sev.type === 'closed') {
-            safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq });
-          }
-        };
-        unsubscribe = session.subscribe(dispatch);
+        const session = await bindSession(
+          freshStart({ cli: msg.cli, repoPath: msg.repo }),
+        );
+        cliKind = msg.cli;
+        repoPath = msg.repo;
         busy = false;
         safeSend({ type: 'freshStarted', cli: msg.cli, repo: msg.repo, latestSeq: session.latestSeq() });
       } catch (e) {
@@ -192,6 +237,17 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'send') {
       const imageCount = msg.images?.length ?? 0;
       console.log(`[ws#${wsId}] send cli=${cliKind} bytes=${msg.text.length} images=${imageCount}`);
+      // If the session promise was nulled (e.g., right after a stop where
+      // bindSession failed, or after an early error), try to recover from
+      // the last hello's cli + repo instead of leaving the user stuck.
+      if (!sessionPromise && cliKind && repoPath) {
+        console.log(`[ws#${wsId}] send: rebinding session for recovery`);
+        try {
+          await bindSession(getOrCreateSession({ cli: cliKind, repoPath }));
+        } catch (e) {
+          console.warn(`[ws#${wsId}] send rebind failed:`, (e as Error).message);
+        }
+      }
       if (!sessionPromise) {
         console.warn(`[ws#${wsId}] send rejected: no session`);
         safeSend({ type: 'error', message: 'no session — send hello first' });

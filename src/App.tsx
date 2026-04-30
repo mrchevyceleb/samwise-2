@@ -166,6 +166,7 @@ export default function App() {
             onBack={goToThreshold}
             onOpenChronicle={() => setChronicleOpen(true)}
             onSend={chat.send}
+            onSteer={chat.steer}
             onFreshStart={chat.freshStart}
             onStop={chat.stop}
             acceptImages={companion !== 'codex'}
@@ -235,6 +236,7 @@ export default function App() {
             errorText={chat.error}
             usage={chat.usage}
             onSend={chat.send}
+            onSteer={chat.steer}
             onBack={goToThreshold}
             onFreshStart={chat.freshStart}
             onStop={chat.stop}

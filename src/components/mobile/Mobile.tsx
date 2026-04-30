@@ -408,6 +408,7 @@ export function MobileConversation({
   onBack,
   onOpenChronicle,
   onSend,
+  onSteer,
   onFreshStart,
   onStop,
   acceptImages = true,
@@ -422,6 +423,7 @@ export function MobileConversation({
   onBack: () => void;
   onOpenChronicle: () => void;
   onSend?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
+  onSteer?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onFreshStart?: () => void;
   onStop?: () => void;
   acceptImages?: boolean;
@@ -430,12 +432,19 @@ export function MobileConversation({
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; mediaType: string; base64: string; previewUrl: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef(true);
 
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (stickyRef.current) el.scrollTop = el.scrollHeight;
+    if (!stickyRef.current) return;
+    const pin = () => {
+      bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    };
+    pin();
+    const id = requestAnimationFrame(pin);
+    return () => cancelAnimationFrame(id);
   }, [blocks, status]);
 
   const onScroll = () => {
@@ -477,12 +486,14 @@ export function MobileConversation({
 
   const submit = () => {
     if (!draft.trim() && pendingImages.length === 0) return;
-    onSend?.(
-      draft,
-      pendingImages.length
-        ? pendingImages.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
-        : undefined,
-    );
+    const imgs = pendingImages.length
+      ? pendingImages.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
+      : undefined;
+    if (status === 'streaming' && onSteer) {
+      onSteer(draft, imgs);
+    } else {
+      onSend?.(draft, imgs);
+    }
     for (const i of pendingImages) URL.revokeObjectURL(i.previewUrl);
     setPendingImages([]);
     setDraft('');
@@ -708,6 +719,7 @@ export function MobileConversation({
         )}
 
         <div style={{ height: 8 }} />
+        <div ref={bottomRef} aria-hidden style={{ height: 1 }} />
       </div>
 
       {/* Composer */}
@@ -845,45 +857,46 @@ export function MobileConversation({
               📎
             </button>
           )}
-          {status === 'streaming' && onStop ? (
-            <button
-              onClick={onStop}
-              aria-label="stop"
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: '50%',
-                border: 0,
-                background: 'var(--ember)',
-                color: 'var(--vellum)',
-                fontFamily: 'var(--serif-display)',
-                fontSize: 14,
-                cursor: 'pointer',
-                flexShrink: 0,
-              }}
-            >
-              ■
-            </button>
-          ) : (
-            <button
-              onClick={submit}
-              style={{
-                width: 30,
-                height: 30,
-                borderRadius: '50%',
-                border: 0,
-                background: 'var(--ink)',
-                color: 'var(--vellum)',
-                fontFamily: 'var(--serif-display)',
-                fontSize: 16,
-                fontStyle: 'italic',
-                cursor: 'pointer',
-                flexShrink: 0,
-              }}
-            >
-              ↑
-            </button>
-          )}
+          {(() => {
+            const hasText = draft.trim().length > 0 || pendingImages.length > 0;
+            const streaming = status === 'streaming';
+            // Empty + streaming → stop the turn.
+            // Text + streaming → steer (stop + send the new prompt).
+            // Otherwise → normal send.
+            if (streaming && !hasText && onStop) {
+              return (
+                <button
+                  onClick={onStop}
+                  aria-label="stop"
+                  style={{
+                    width: 30, height: 30, borderRadius: '50%', border: 0,
+                    background: 'var(--ember)', color: 'var(--vellum)',
+                    fontFamily: 'var(--serif-display)', fontSize: 14,
+                    cursor: 'pointer', flexShrink: 0,
+                  }}
+                >
+                  ■
+                </button>
+              );
+            }
+            return (
+              <button
+                onClick={submit}
+                aria-label={streaming ? 'steer' : 'send'}
+                title={streaming ? 'stop + send this as a new prompt' : undefined}
+                style={{
+                  width: 30, height: 30, borderRadius: '50%', border: 0,
+                  background: streaming ? 'var(--ember)' : 'var(--ink)',
+                  color: 'var(--vellum)',
+                  fontFamily: 'var(--serif-display)',
+                  fontSize: 16, fontStyle: 'italic',
+                  cursor: 'pointer', flexShrink: 0,
+                }}
+              >
+                {streaming ? '↪' : '↑'}
+              </button>
+            );
+          })()}
         </div>
         <input
           type="file"

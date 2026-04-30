@@ -20,6 +20,7 @@ type ConversationProps = {
   errorText?: string | null;
   usage?: { inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; fraction: number; windowTokens: number } | null;
   onSend?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
+  onSteer?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onBack?: () => void;
   onFreshStart?: () => void;
   onStop?: () => void;
@@ -53,21 +54,30 @@ export function Conversation({
   errorText,
   usage,
   onSend,
+  onSteer,
   onBack,
   onFreshStart,
   onStop,
   acceptImages = true,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef(true);
 
-  // Pin to bottom on every blocks update — but only if the user is already
-  // near the bottom. If they've scrolled up to read something, leave them
-  // alone instead of fighting their thumb on every text-delta.
+  // Pin to bottom on every blocks update unless the user has scrolled up.
+  // Two layers: scrollIntoView on a sentinel covers most cases, and an rAF
+  // pass after that catches the case where layout hadn't finished when
+  // useEffect first ran.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (stickyRef.current) el.scrollTop = el.scrollHeight;
+    if (!stickyRef.current) return;
+    const pin = () => {
+      bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    };
+    pin();
+    const id = requestAnimationFrame(pin);
+    return () => cancelAnimationFrame(id);
   }, [blocks, status]);
 
   const onScroll = () => {
@@ -269,6 +279,7 @@ export function Conversation({
           )}
 
           <div style={{ height: 28 }} />
+          <div ref={bottomRef} aria-hidden style={{ height: 1 }} />
         </div>
       </div>
 
@@ -285,6 +296,8 @@ export function Conversation({
             repo={repo}
             placeholder="speak, master…"
             onSend={onSend}
+            onSteer={onSteer}
+            busy={status === 'streaming'}
             acceptImages={acceptImages}
           />
         </div>
