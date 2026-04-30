@@ -234,10 +234,19 @@ export function useChat(opts: {
   onInitialMessageSentRef.current = onInitialMessageSent;
   /** Latest event seq received from server. Sent on reconnect for replay. */
   const lastSeqRef = useRef(-1);
+  /** Key (`${cli}|${repoPath}`) of the conversation we've already restored from
+   *  storage. Writes are gated on this so we don't wipe a saved chat with the
+   *  empty initial state on the first render after repos load. */
+  const restoredKeyRef = useRef<string | null>(null);
 
   // Save to localStorage whenever blocks change, so a refresh restores them.
+  // CRITICAL: skip until the read-and-restore effect below has run for the
+  // current (cli, repo) — otherwise the first render after repos resolve
+  // writes blocks=[] over saved history before we get a chance to load it.
   useEffect(() => {
     if (!repo) return;
+    const key = `${cli}|${repo.path}`;
+    if (restoredKeyRef.current !== key) return;
     writeStoredBlocks(cli, repo.path, blocks);
     writeStoredSeq(cli, repo.path, lastSeqRef.current);
   }, [blocks, repo?.path, cli]);
@@ -254,6 +263,9 @@ export function useChat(opts: {
     reconnectAttemptRef.current = 0;
     // Sequence we've already seen (persisted) — replay only what's newer.
     lastSeqRef.current = readStoredSeq(cli, repo.path);
+    // Mark this conversation as restored so the persistence-write effect can
+    // safely begin saving updates back to storage.
+    restoredKeyRef.current = `${cli}|${repo.path}`;
 
     const connect = () => {
       if (teardownRef.current) return;
@@ -284,7 +296,11 @@ export function useChat(opts: {
           lastSeqRef.current = msg.latestSeq;
         }
         if (msg.type === 'ready') {
-          setStatus('ready');
+          // If the server says we attached to a busy session (Sam is mid-turn
+          // because the user reconnected from a phone unlock or tab switch),
+          // jump straight to 'streaming' so the UI shows tending instead of
+          // looking idle while events stream in via replay.
+          setStatus(msg.busy ? 'streaming' : 'ready');
           // Send a pending first message (typed straight into the threshold)
           // the moment the server says ready, not via a downstream effect.
           const pending = initialMessageRef.current;
@@ -313,7 +329,7 @@ export function useChat(opts: {
           }
         }
         else if (msg.type === 'sessionClosed') {
-          setError('Sam closed the session — say something to wake him.');
+          setError('Sam closed the session. Say something to wake him.');
           setStatus('ready');
         }
         else if (msg.type === 'stream') {
@@ -347,7 +363,7 @@ export function useChat(opts: {
         reconnectTimerRef.current = window.setTimeout(connect, delay);
       };
       ws.onerror = () => {
-        setError('the line went quiet — reconnecting…');
+        setError('the line went quiet, reconnecting…');
       };
     };
 
@@ -376,7 +392,7 @@ export function useChat(opts: {
       { kind: 'user', id: id(), text, ts: Date.now() },
     ]);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setError('Sam is not on the line — please wait a moment.');
+      setError('Sam is not on the line. Please wait a moment.');
       return;
     }
     setError(null);
@@ -387,7 +403,7 @@ export function useChat(opts: {
     if (!repo) return;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setError('Sam is not on the line — please wait a moment.');
+      setError('Sam is not on the line. Please wait a moment.');
       return;
     }
     ws.send(JSON.stringify({ type: 'freshStart', cli, repo: repo.path }));
@@ -414,7 +430,7 @@ export function useChat(opts: {
       { kind: 'user', id: id(), text, ts: Date.now() },
     ]);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      setError('Sam is not on the line — please wait a moment.');
+      setError('Sam is not on the line. Please wait a moment.');
       return;
     }
     setError(null);

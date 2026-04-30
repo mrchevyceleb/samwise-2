@@ -78,49 +78,49 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        padding: '64px 40px 60px',
+        padding: '72px 48px 48px',
         overflowY: 'auto',
       }}
     >
       {/* Sam himself + title block */}
       <div
         style={{
-          padding: 6,
+          padding: 7,
           background: 'var(--vellum)',
           border: '1px solid var(--rule)',
           borderRadius: '50%',
           boxShadow:
             '0 1px 0 var(--shadow-warm), 0 0 36px rgba(184,89,58,0.10)',
-          marginBottom: 18,
+          marginBottom: 22,
         }}
       >
-        <SamPortrait size={104} ring={false} />
+        <SamPortrait size={128} ring={false} />
       </div>
-      <div className="sw-folio" style={{ marginBottom: 6, letterSpacing: '0.18em' }}>
+      <div className="sw-folio" style={{ marginBottom: 8, letterSpacing: '0.18em', fontSize: 12 }}>
         · vol. ii ·
       </div>
       <h1
         style={{
           margin: 0,
           fontFamily: 'var(--serif-display)',
-          fontSize: 64,
+          fontSize: 84,
           fontWeight: 500,
           lineHeight: 0.95,
           color: 'var(--ink)',
-          letterSpacing: '-0.01em',
+          letterSpacing: 0,
         }}
       >
         Samwise
       </h1>
       <p
         style={{
-          margin: '14px 0 0',
+          margin: '20px 0 0',
           fontFamily: 'var(--serif-display)',
           fontStyle: 'italic',
-          fontSize: 19,
+          fontSize: 28,
           color: 'var(--ink-soft)',
           textAlign: 'center',
-          maxWidth: 480,
+          maxWidth: 620,
         }}
       >
         At your service, master.
@@ -131,7 +131,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
       </p>
 
       {/* Stats strip */}
-      <div style={{ display: 'flex', gap: 18, marginTop: 32, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 24, marginTop: 40, alignItems: 'center' }}>
         <ThresholdStat n={STATS.underway} l="underway" tone="ember" />
         <Divider />
         <ThresholdStat n={STATS.awaits} l="awaits" tone="gold" />
@@ -142,9 +142,9 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
       {/* Command palette */}
       <div
         style={{
-          width: 660,
+          width: 760,
           maxWidth: '100%',
-          marginTop: 36,
+          marginTop: 44,
           background: 'var(--vellum)',
           border: '1px solid var(--rule)',
           borderRadius: 4,
@@ -155,14 +155,14 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
       >
         <div
           style={{
-            padding: '14px 18px',
+            padding: '20px 24px',
             borderBottom: '1px solid var(--rule-soft)',
             display: 'flex',
             alignItems: 'center',
             gap: 10,
           }}
         >
-          <SearchGlyph />
+          <SearchGlyph size={18} />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -175,16 +175,16 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
               background: 'transparent',
               fontFamily: 'var(--serif-display)',
               fontStyle: query ? 'normal' : 'italic',
-              fontSize: 18,
+              fontSize: 26,
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
           <span className="sw-folio">⌘K</span>
         </div>
 
-        <div style={{ padding: '14px 18px 6px' }}>
+        <div style={{ padding: '18px 24px 8px' }}>
           <SectionLabel folio="i" label="choose your companion" />
-          <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 8 }}>
             {COMPANIONS.map((c) => (
               <CompanionPick
                 key={c.id}
@@ -199,7 +199,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
 
         <hr style={{ border: 0, height: 1, background: 'var(--rule-soft)', margin: 0 }} />
 
-        <div style={{ padding: '14px 18px' }}>
+        <div style={{ padding: '18px 24px' }}>
           <SectionLabel
             folio="ii"
             label={
@@ -211,7 +211,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
           {companion === 'assistant' ? (
             <div
               style={{
-                padding: '7px 12px',
+                padding: '11px 14px',
                 borderLeft: '2px solid var(--ember)',
                 background: 'rgba(184,89,58,0.08)',
                 display: 'flex',
@@ -226,7 +226,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
               <span
                 className="sw-mono"
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   color: 'var(--ink)',
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
@@ -239,7 +239,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
               </span>
               <span
                 className="sw-mono"
-                style={{ fontSize: 10.5, color: 'var(--ember)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                style={{ fontSize: 12.5, color: 'var(--ember)', whiteSpace: 'nowrap', flexShrink: 0 }}
               >
                 · master
               </span>
@@ -283,7 +283,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
                         {hub}
                       </div>
                     )}
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                       {hubRepos.map((r) => (
                         <RepoPick
                           key={r.path}
@@ -301,7 +301,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
                   style={{
                     display: 'grid',
                     gridTemplateColumns: '1fr 1fr',
-                    gap: 4,
+                    gap: 6,
                     marginTop: 6,
                   }}
                 >
@@ -321,7 +321,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
 
         <div
           style={{
-            padding: '10px 18px',
+            padding: '14px 24px',
             borderTop: '1px solid var(--rule-soft)',
             background: 'var(--parchment-2)',
             display: 'flex',
@@ -335,7 +335,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
           <span style={{ marginLeft: 'auto' }}></span>
           <button
             className="sw-btn sw-btn-primary"
-            style={{ fontSize: 13, padding: '6px 18px' }}
+            style={{ fontSize: 16, padding: '10px 24px' }}
             onClick={() => setForth(query.trim() || undefined)}
           >
             Set forth
@@ -346,15 +346,15 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
       {/* Hubs strip */}
       <div
         style={{
-          width: 660,
+          width: 760,
           maxWidth: '100%',
-          marginTop: 28,
+          marginTop: 32,
           display: 'flex',
           alignItems: 'center',
           gap: 14,
         }}
       >
-        <span className="sw-smallcaps" style={{ fontSize: 10, whiteSpace: 'nowrap' }}>
+        <span className="sw-smallcaps" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
           or, an established hub
         </span>
         <span style={{ flex: 1, height: 1, background: 'var(--rule-soft)' }} />
@@ -364,11 +364,11 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
       </div>
       <div
         style={{
-          width: 660,
+          width: 760,
           maxWidth: '100%',
-          marginTop: 12,
+          marginTop: 14,
           display: 'flex',
-          gap: 8,
+          gap: 10,
           flexWrap: 'wrap',
         }}
       >
@@ -382,7 +382,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
 
 // ─── Atoms ───
 function Divider() {
-  return <span style={{ width: 1, height: 40, background: 'var(--rule-soft)' }} />;
+  return <span style={{ width: 1, height: 52, background: 'var(--rule-soft)' }} />;
 }
 
 function ThresholdStat({
@@ -396,11 +396,11 @@ function ThresholdStat({
     gold: 'var(--gold)',
   } as const;
   return (
-    <div style={{ textAlign: 'center', minWidth: 76 }}>
+    <div style={{ textAlign: 'center', minWidth: 88 }}>
       <div
         style={{
           fontFamily: 'var(--serif-display)',
-          fontSize: 36,
+          fontSize: 48,
           fontWeight: 500,
           lineHeight: 1,
           color: colors[tone],
@@ -410,7 +410,7 @@ function ThresholdStat({
       </div>
       <div
         className="sw-smallcaps"
-        style={{ fontSize: 10, marginTop: 4, whiteSpace: 'nowrap' }}
+        style={{ fontSize: 12, marginTop: 6, whiteSpace: 'nowrap' }}
       >
         {l}
       </div>
@@ -422,9 +422,9 @@ function SectionLabel({ folio, label }: { folio: string; label: string }) {
   return (
     <div
       className="sw-smallcaps"
-      style={{ fontSize: 10.5, marginBottom: 8, whiteSpace: 'nowrap' }}
+      style={{ fontSize: 12, marginBottom: 12, whiteSpace: 'nowrap' }}
     >
-      <span className="sw-folio" style={{ marginRight: 8 }}>
+      <span className="sw-folio" style={{ marginRight: 8, fontSize: 12 }}>
         {folio}
       </span>
       {label}
@@ -443,19 +443,19 @@ function CompanionPick({
       onClick={onSelect}
       style={{
         flex: 1,
-        padding: '12px 14px',
+        padding: '16px 18px',
         background: selected ? 'var(--ink)' : 'var(--vellum)',
         color: selected ? 'var(--vellum)' : 'var(--ink)',
-        border: '1px solid ' + (selected ? 'var(--ink)' : 'var(--rule-soft)'),
+        border: '1px solid ' + (selected ? 'var(--ink)' : 'var(--rule)'),
         borderRadius: 12,
         cursor: 'pointer',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <span
           style={{
-            width: 14,
-            height: 14,
+            width: 16,
+            height: 16,
             borderRadius: '50%',
             flexShrink: 0,
             border: '1.2px solid ' + (selected ? 'var(--vellum)' : 'var(--rule)'),
@@ -478,7 +478,7 @@ function CompanionPick({
         <span
           style={{
             fontFamily: 'var(--serif-display)',
-            fontSize: 16,
+            fontSize: 19,
             fontWeight: 500,
             whiteSpace: 'nowrap',
           }}
@@ -490,9 +490,9 @@ function CompanionPick({
         style={{
           fontFamily: 'var(--serif-display)',
           fontStyle: 'italic',
-          fontSize: 12.5,
+          fontSize: 14.5,
           color: selected ? 'rgba(241,232,214,0.7)' : 'var(--ink-soft)',
-          paddingLeft: 22,
+          paddingLeft: 26,
         }}
       >
         {sub}
@@ -527,12 +527,12 @@ function RepoPick({
       onClick={onClick}
       title={repo.path}
       style={{
-        padding: '7px 12px',
+        padding: '11px 14px',
         borderRadius: 2,
         cursor: 'pointer',
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        gap: 12,
         background: selected ? 'rgba(184,89,58,0.08)' : 'transparent',
         borderLeft: pinned
           ? '2px solid var(--ember)'
@@ -543,7 +543,7 @@ function RepoPick({
       }}
     >
       {!italic && (
-        <svg width="11" height="14" viewBox="0 0 11 14" fill="none" style={{ flexShrink: 0 }}>
+        <svg width="13" height="16" viewBox="0 0 11 14" fill="none" style={{ flexShrink: 0 }}>
           <path d="M1 2 H10 V12 H1 Z" stroke="var(--ink-soft)" strokeWidth="0.8" />
           <path
             d="M3 5 H8 M3 7 H8 M3 9 H6"
@@ -554,7 +554,7 @@ function RepoPick({
       )}
       <span
         style={{
-          fontSize: 13,
+          fontSize: 14,
           color: italic ? 'var(--ink-soft)' : 'var(--ink)',
           fontStyle: italic ? 'italic' : 'normal',
           fontFamily: italic ? 'var(--serif-display)' : 'var(--mono)',
@@ -571,7 +571,7 @@ function RepoPick({
         <span
           className="sw-mono"
           style={{
-            fontSize: 10.5,
+            fontSize: 12.5,
             color: 'var(--ember)',
             whiteSpace: 'nowrap',
             flexShrink: 0,
@@ -588,20 +588,20 @@ function PillHub({ hub }: { hub: Hub }) {
   return (
     <div
       style={{
-        padding: '8px 14px',
+        padding: '10px 18px',
         background: hub.cozy ? 'var(--parchment-3)' : 'var(--vellum)',
         border: '1px solid var(--rule-soft)',
-        borderRadius: 24,
+        borderRadius: 28,
         display: 'flex',
         alignItems: 'center',
-        gap: 8,
+        gap: 10,
         cursor: 'pointer',
       }}
     >
       <span
         style={{
           fontFamily: 'var(--serif-display)',
-          fontSize: 14,
+          fontSize: 16,
           fontStyle: 'italic',
           whiteSpace: 'nowrap',
         }}
@@ -610,7 +610,7 @@ function PillHub({ hub }: { hub: Hub }) {
       </span>
       <span
         className="sw-mono"
-        style={{ fontSize: 10.5, color: 'var(--ink-faint)', whiteSpace: 'nowrap' }}
+        style={{ fontSize: 12, color: 'var(--ink-faint)', whiteSpace: 'nowrap' }}
       >
         {hub.count}
       </span>

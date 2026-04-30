@@ -114,20 +114,20 @@ export function Chip({
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 6,
-        padding: '2px 8px',
+        gap: 7,
+        padding: '4px 10px',
         borderRadius: 2,
         background: t.bg,
         color: t.fg,
         fontFamily: 'var(--serif-body)',
-        fontSize: 12,
+        fontSize: 13.5,
         border: '1px solid ' + (tone === 'neutral' ? 'var(--rule-soft)' : 'transparent'),
         whiteSpace: 'nowrap',
         ...style,
       }}
     >
       {dot && (
-        <span style={{ width: 5, height: 5, borderRadius: '50%', background: t.dot }} />
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: t.dot }} />
       )}
       {children}
     </span>

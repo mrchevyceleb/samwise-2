@@ -44,7 +44,7 @@ export function ChronicleRibbon({
         position: 'sticky',
         top: 0,
         alignSelf: 'flex-start',
-        width: wide ? 200 : 56,
+        width: wide ? 220 : 64,
         height: '100dvh',
         borderRight: '1px solid var(--rule-soft)',
         backdropFilter: 'blur(6px)',
@@ -60,21 +60,21 @@ export function ChronicleRibbon({
         onClick={onNew}
         title="back to the threshold"
         style={{
-          padding: wide ? '0 16px 8px' : '0 12px 8px',
+          padding: wide ? '0 18px 10px' : '0 14px 10px',
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
+          gap: 10,
           cursor: 'pointer',
         }}
       >
-        <SamPortrait size={20} />
+        <SamPortrait size={24} />
         {wide && (
-          <span className="sw-smallcaps" style={{ fontSize: 9.5 }}>
+          <span className="sw-smallcaps" style={{ fontSize: 11 }}>
             The chronicle
           </span>
         )}
         {wide && (
-          <span className="sw-folio" style={{ marginLeft: 'auto' }}>
+          <span className="sw-folio" style={{ marginLeft: 'auto', fontSize: 12 }}>
             v
           </span>
         )}
@@ -86,7 +86,7 @@ export function ChronicleRibbon({
           {wide && (
             <div
               className="sw-smallcaps"
-              style={{ fontSize: 9, color: 'var(--ember)', marginBottom: 4, letterSpacing: '0.18em' }}
+              style={{ fontSize: 10, color: 'var(--ember)', marginBottom: 4, letterSpacing: '0.18em' }}
             >
               · now ·
             </div>
@@ -122,7 +122,7 @@ export function ChronicleRibbon({
                     style={{
                       fontFamily: 'var(--serif-display)',
                       fontStyle: 'italic',
-                      fontSize: 12,
+                      fontSize: 14,
                       color: 'var(--ink)',
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
@@ -135,7 +135,7 @@ export function ChronicleRibbon({
                   <div
                     className="sw-mono"
                     style={{
-                      fontSize: 9.5,
+                      fontSize: 11,
                       color: 'var(--ink-faint)',
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
@@ -208,13 +208,13 @@ export function ChronicleRibbon({
                 {wide ? (
                   <>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                      <span className="sw-folio" style={{ fontSize: 9.5 }}>
+                      <span className="sw-folio" style={{ fontSize: 11 }}>
                         {e.t}
                       </span>
                       {e.awaits && (
                         <span
                           className="sw-smallcaps"
-                          style={{ fontSize: 8.5, color: 'var(--gold)' }}
+                          style={{ fontSize: 10, color: 'var(--gold)' }}
                         >
                           asks
                         </span>
@@ -222,7 +222,7 @@ export function ChronicleRibbon({
                       {e.running && (
                         <span
                           className="sw-smallcaps"
-                          style={{ fontSize: 8.5, color: 'var(--ember)' }}
+                          style={{ fontSize: 10, color: 'var(--ember)' }}
                         >
                           now
                         </span>
@@ -231,7 +231,7 @@ export function ChronicleRibbon({
                     <div
                       style={{
                         fontFamily: 'var(--serif-body)',
-                        fontSize: 12.5,
+                        fontSize: 14,
                         color: active ? 'var(--ink)' : 'var(--ink-2)',
                         fontWeight: active ? 500 : 400,
                         lineHeight: 1.25,
@@ -246,7 +246,7 @@ export function ChronicleRibbon({
                     <div
                       className="sw-mono"
                       style={{
-                        fontSize: 9.5,
+                        fontSize: 11,
                         color: 'var(--ink-faint)',
                         marginTop: 1,
                         whiteSpace: 'nowrap',
@@ -260,7 +260,7 @@ export function ChronicleRibbon({
                 ) : (
                   <span
                     className="sw-folio"
-                    style={{ fontSize: 9, display: 'block', textAlign: 'center' }}
+                    style={{ fontSize: 10.5, display: 'block', textAlign: 'center' }}
                   >
                     {e.t}
                   </span>
@@ -285,8 +285,8 @@ export function ChronicleRibbon({
           onClick={onNew}
           style={{
             width: '100%',
-            fontSize: 11.5,
-            padding: wide ? '5px 8px' : '5px 0',
+            fontSize: 13,
+            padding: wide ? '8px 10px' : '8px 0',
             fontFamily: 'var(--serif-display)',
             fontStyle: 'italic',
           }}
@@ -301,8 +301,8 @@ export function ChronicleRibbon({
             aria-label={theme === 'dark' ? 'switch to light mode' : 'switch to dark mode'}
             style={{
               width: '100%',
-              fontSize: wide ? 11 : 14,
-              padding: wide ? '4px 8px' : '4px 0',
+              fontSize: wide ? 13 : 14,
+              padding: wide ? '8px 10px' : '8px 0',
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
               color: 'var(--ink-soft)',

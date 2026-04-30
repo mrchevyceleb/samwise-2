@@ -29,7 +29,7 @@ export const ASSISTANT_HUB: Repo = {
 
 export const SPECIAL_REPOS: Repo[] = [
   { path: '__resume__', name: 'resume an errand…', italic: true },
-  { path: '__just-chat__', name: 'no repository — just chat', italic: true },
+  { path: '__just-chat__', name: 'no repository, just chat', italic: true },
 ];
 
 export type Hub = { name: string; count: number; cozy?: boolean };

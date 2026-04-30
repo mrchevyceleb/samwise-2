@@ -45,11 +45,11 @@ function MobileGrowingInput({
         fontFamily: 'var(--serif-body)',
         fontStyle: value ? 'normal' : 'italic',
         color: value ? 'var(--ink)' : 'var(--ink-faint)',
-        fontSize: 16,
+        fontSize: 19,
         resize: 'none',
         maxHeight: '35dvh',
         overflowY: 'auto',
-        lineHeight: 1.4,
+        lineHeight: 1.45,
         minWidth: 0,
       }}
     />
@@ -68,12 +68,21 @@ import {
   type ChronicleEvent,
   type ChronicleEventKind,
 } from '../../data/mock';
+import type { LiveSession } from '../../data/types';
+
+const COMPANION_LABEL: Record<CompanionId, string> = {
+  claude: 'claude',
+  codex: 'codex',
+  assistant: 'assistant',
+};
 
 // ─── Mobile Threshold ───
 export function MobileThreshold({
   repos,
   reposLoading,
   onSetForth,
+  liveSessions = [],
+  onSelectLive,
   theme = 'light',
   onToggleTheme,
 }: {
@@ -84,6 +93,8 @@ export function MobileThreshold({
     repo?: Repo;
     initialMessage?: string;
   }) => void;
+  liveSessions?: LiveSession[];
+  onSelectLive?: (s: LiveSession) => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
 }) {
@@ -111,7 +122,7 @@ export function MobileThreshold({
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        padding: '28px 22px 40px',
+        padding: '32px 22px 24px',
         overflowY: 'auto',
         position: 'relative',
       }}
@@ -148,55 +159,150 @@ export function MobileThreshold({
           border: '1px solid var(--rule)',
           borderRadius: '50%',
           boxShadow: '0 1px 0 var(--shadow-warm), 0 0 28px rgba(184,89,58,0.10)',
-          marginBottom: 14,
+          marginBottom: 16,
         }}
       >
-        <SamPortrait size={72} ring={false} />
+        <SamPortrait size={88} ring={false} />
       </div>
-      <div className="sw-folio" style={{ marginBottom: 4, letterSpacing: '0.18em' }}>
+      <div className="sw-folio" style={{ marginBottom: 6, letterSpacing: '0.18em', fontSize: 11 }}>
         · vol. ii ·
       </div>
       <h1
         style={{
           margin: 0,
           fontFamily: 'var(--serif-display)',
-          fontSize: 44,
+          fontSize: 64,
           fontWeight: 500,
           lineHeight: 0.95,
           color: 'var(--ink)',
-          letterSpacing: '-0.01em',
+          letterSpacing: 0,
         }}
       >
         Samwise
       </h1>
       <p
         style={{
-          margin: '10px 0 0',
+          margin: '14px 0 0',
           fontFamily: 'var(--serif-display)',
           fontStyle: 'italic',
-          fontSize: 15.5,
+          fontSize: 22,
           color: 'var(--ink-soft)',
           textAlign: 'center',
-          maxWidth: 280,
+          maxWidth: 340,
         }}
       >
         At your service, master.
         <span style={{ color: 'var(--ink-faint)' }}> Whither this morning?</span>
       </p>
 
-      <div style={{ display: 'flex', gap: 10, marginTop: 22, alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 14, marginTop: 26, alignItems: 'center' }}>
         <PStat n={STATS.underway} l="underway" tone="ember" />
-        <span style={{ width: 1, height: 30, background: 'var(--rule-soft)' }} />
+        <span style={{ width: 1, height: 38, background: 'var(--rule-soft)' }} />
         <PStat n={STATS.awaits} l="awaits" tone="gold" />
-        <span style={{ width: 1, height: 30, background: 'var(--rule-soft)' }} />
+        <span style={{ width: 1, height: 38, background: 'var(--rule-soft)' }} />
         <PStat n={STATS.finished} l="finished" tone="moss" />
       </div>
+
+      {/* Live sessions — Sam may still be tending another errand. Tap to hop
+          back in. Hidden when there's nothing running so the threshold stays
+          clean for the common case. */}
+      {liveSessions.length > 0 && (
+        <div
+          style={{
+            width: '100%',
+            marginTop: 18,
+            background: 'var(--vellum)',
+            border: '1px solid var(--rule)',
+            borderRadius: 4,
+            boxShadow: '0 1px 0 var(--shadow-warm)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            className="sw-smallcaps"
+            style={{
+              fontSize: 9.5,
+              padding: '10px 14px 4px',
+              color: 'var(--ember)',
+              letterSpacing: '0.18em',
+            }}
+          >
+            · now tending ·
+          </div>
+          {liveSessions.map((s) => (
+            <div
+              key={`${s.cli}|${s.cwd}`}
+              onClick={() => onSelectLive?.(s)}
+              style={{
+                padding: '8px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                cursor: 'pointer',
+                background: s.busy ? 'rgba(184,89,58,0.10)' : 'transparent',
+                borderTop: '1px solid var(--rule-soft)',
+              }}
+            >
+              <span
+                style={{
+                  width: 9,
+                  height: 9,
+                  borderRadius: '50%',
+                  background: 'var(--ember)',
+                  flexShrink: 0,
+                  animation: s.busy ? 'sw-pulse 1.4s infinite' : 'none',
+                  opacity: s.busy ? 1 : 0.5,
+                }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div
+                  style={{
+                    fontFamily: 'var(--serif-display)',
+                    fontStyle: 'italic',
+                    fontSize: 14,
+                    color: 'var(--ink)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {s.repoName}
+                </div>
+                <div
+                  className="sw-mono"
+                  style={{
+                    fontSize: 10.5,
+                    color: 'var(--ink-faint)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {COMPANION_LABEL[s.cli]}{s.busy ? ' · tending' : ' · idle'}
+                </div>
+              </div>
+              <span
+                className="sw-folio"
+                style={{
+                  fontStyle: 'italic',
+                  color: 'var(--ember)',
+                  fontSize: 11,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}
+              >
+                rejoin →
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Palette card */}
       <div
         style={{
           width: '100%',
-          marginTop: 22,
+          marginTop: 26,
           background: 'var(--vellum)',
           border: '1px solid var(--rule)',
           borderRadius: 4,
@@ -213,15 +319,16 @@ export function MobileThreshold({
             onSetForth({ companion, repo: effectiveRepo, initialMessage: text });
           }}
           style={{
-            padding: '12px 14px',
+            padding: '16px 16px',
             borderBottom: '1px solid var(--rule-soft)',
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
+            gap: 10,
+            minHeight: 48,
             margin: 0,
           }}
         >
-          <SearchGlyph size={13} />
+          <SearchGlyph size={16} />
           <input
             type="search"
             enterKeyHint="send"
@@ -236,15 +343,15 @@ export function MobileThreshold({
               background: 'transparent',
               fontFamily: 'var(--serif-display)',
               fontStyle: query ? 'normal' : 'italic',
-              fontSize: 15,
+              fontSize: 21,
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
         </form>
 
-        <div style={{ padding: '12px 14px 6px' }}>
+        <div style={{ padding: '14px 16px 8px' }}>
           <PSectionLabel folio="i" label="your companion" />
-          <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             {COMPANIONS.map((c) => (
               <PCompanion
                 key={c.id}
@@ -256,7 +363,7 @@ export function MobileThreshold({
           </div>
         </div>
         <hr style={{ border: 0, height: 1, background: 'var(--rule-soft)', margin: 0 }} />
-        <div style={{ padding: '12px 14px 8px' }}>
+        <div style={{ padding: '14px 16px 10px' }}>
           <PSectionLabel
             folio="ii"
             label={
@@ -332,7 +439,7 @@ export function MobileThreshold({
 
         <div
           style={{
-            padding: '10px 14px',
+            padding: '14px 16px',
             borderTop: '1px solid var(--rule-soft)',
             background: 'var(--parchment-2)',
             display: 'flex',
@@ -340,7 +447,7 @@ export function MobileThreshold({
             gap: 8,
           }}
         >
-          <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 10.5 }}>
+          <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
             tap to set forth
           </span>
           <span style={{ marginLeft: 'auto' }} />
@@ -348,12 +455,13 @@ export function MobileThreshold({
             className="sw-btn sw-btn-primary"
             onClick={() => onSetForth({ companion, repo: effectiveRepo })}
             style={{
-              fontSize: 13,
-              padding: '6px 16px',
+              fontSize: 16,
+              padding: '12px 22px',
               whiteSpace: 'nowrap',
               flexShrink: 0,
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
+              minHeight: 46,
             }}
           >
             Set forth ↵
@@ -365,13 +473,13 @@ export function MobileThreshold({
       <div
         style={{
           width: '100%',
-          marginTop: 18,
+          marginTop: 22,
           display: 'flex',
           alignItems: 'center',
           gap: 10,
         }}
       >
-        <span className="sw-smallcaps" style={{ fontSize: 9.5, whiteSpace: 'nowrap' }}>
+        <span className="sw-smallcaps" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
           or, a hub
         </span>
         <span style={{ flex: 1, height: 1, background: 'var(--rule-soft)' }} />
@@ -382,9 +490,9 @@ export function MobileThreshold({
       <div
         style={{
           width: '100%',
-          marginTop: 8,
+          marginTop: 10,
           display: 'flex',
-          gap: 6,
+          gap: 8,
           flexWrap: 'wrap',
         }}
       >
@@ -530,12 +638,13 @@ export function MobileConversation({
       {/* Header */}
       <div
         style={{
-          padding: '12px 16px 10px',
+          padding: '10px 18px 12px',
           borderBottom: '1px solid var(--rule-soft)',
           background: 'var(--vellum)',
           display: 'flex',
           alignItems: 'center',
-          gap: 10,
+          gap: 12,
+          minHeight: 52,
         }}
       >
         <button
@@ -543,10 +652,10 @@ export function MobileConversation({
           style={{
             background: 'transparent',
             border: 0,
-            padding: 0,
+            padding: '8px 4px',
             fontFamily: 'var(--serif-display)',
             fontStyle: 'italic',
-            fontSize: 14,
+            fontSize: 16,
             color: 'var(--ember)',
             whiteSpace: 'nowrap',
             flexShrink: 0,
@@ -555,12 +664,12 @@ export function MobileConversation({
         >
           ← errands
         </button>
-        <SamPortrait size={22} />
+        <SamPortrait size={28} />
         <span
           style={{
             fontFamily: 'var(--serif-display)',
             fontStyle: 'italic',
-            fontSize: 14,
+            fontSize: 16,
             color: 'var(--ink-2)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -625,18 +734,18 @@ export function MobileConversation({
           flex: 1,
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '18px 20px 10px',
+          padding: '22px 22px 12px',
           background: 'var(--vellum)',
         }}
       >
-        <div className="sw-folio" style={{ textAlign: 'center', marginBottom: 6 }}>
+        <div className="sw-folio" style={{ textAlign: 'center', marginBottom: 8, fontSize: 12 }}>
           {agent.toLowerCase()} · {repo}
         </div>
         <h1
           style={{
             margin: 0,
             fontFamily: 'var(--serif-display)',
-            fontSize: 26,
+            fontSize: 32,
             fontWeight: 500,
             color: 'var(--ink)',
             textAlign: 'center',
@@ -725,43 +834,19 @@ export function MobileConversation({
       {/* Composer */}
       <div
         style={{
-          padding: '8px 14px 12px',
+          padding: '12px 14px 10px',
           borderTop: '1px solid var(--rule-soft)',
           background: 'var(--parchment-2)',
         }}
       >
-        {/* Quick "back to errands" pill above composer so a long chat
-            doesn't make you scroll all the way up to leave. */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 6,
-            padding: '0 4px',
-          }}
-        >
-          <button
-            onClick={onBack}
-            style={{
-              background: 'transparent',
-              border: 0,
-              padding: 0,
-              fontFamily: 'var(--serif-display)',
-              fontStyle: 'italic',
-              fontSize: 12,
-              color: 'var(--ember)',
-              cursor: 'pointer',
-            }}
+        {pendingImages.length > 0 && (
+          <div
+            className="sw-folio"
+            style={{ fontSize: 11, fontStyle: 'italic', margin: '0 4px 6px' }}
           >
-            ← errands
-          </button>
-          {pendingImages.length > 0 && (
-            <span className="sw-folio" style={{ fontSize: 10.5, fontStyle: 'italic' }}>
-              {pendingImages.length} image{pendingImages.length === 1 ? '' : 's'} attached
-            </span>
-          )}
-        </div>
+            {pendingImages.length} image{pendingImages.length === 1 ? '' : 's'} attached
+          </div>
+        )}
         {pendingImages.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
             {pendingImages.map((img) => (
@@ -810,12 +895,13 @@ export function MobileConversation({
         <div
           style={{
             background: 'var(--vellum)',
-            borderRadius: 18,
+            borderRadius: 22,
             border: '1px solid var(--rule-soft)',
-            padding: '8px 10px 8px 12px',
+            padding: '10px 14px',
             display: 'flex',
             alignItems: 'flex-end',
-            gap: 8,
+            gap: 10,
+            minHeight: 52,
           }}
           onPaste={(e) => {
             if (!acceptImages) return;
@@ -842,8 +928,8 @@ export function MobileConversation({
               onClick={() => fileInputRef.current?.click()}
               aria-label="attach image"
               style={{
-                width: 30,
-                height: 30,
+                width: 48,
+                height: 48,
                 borderRadius: '50%',
                 border: '1px solid var(--rule-soft)',
                 background: 'transparent',
@@ -869,9 +955,9 @@ export function MobileConversation({
                   onClick={onStop}
                   aria-label="stop"
                   style={{
-                    width: 30, height: 30, borderRadius: '50%', border: 0,
+                    width: 48, height: 48, borderRadius: '50%', border: 0,
                     background: 'var(--ember)', color: 'var(--vellum)',
-                    fontFamily: 'var(--serif-display)', fontSize: 14,
+                    fontFamily: 'var(--serif-display)', fontSize: 18,
                     cursor: 'pointer', flexShrink: 0,
                   }}
                 >
@@ -885,11 +971,11 @@ export function MobileConversation({
                 aria-label={streaming ? 'steer' : 'send'}
                 title={streaming ? 'stop + send this as a new prompt' : undefined}
                 style={{
-                  width: 30, height: 30, borderRadius: '50%', border: 0,
+                  width: 48, height: 48, borderRadius: '50%', border: 0,
                   background: streaming ? 'var(--ember)' : 'var(--ink)',
                   color: 'var(--vellum)',
                   fontFamily: 'var(--serif-display)',
-                  fontSize: 16, fontStyle: 'italic',
+                  fontSize: 24, fontStyle: 'italic',
                   cursor: 'pointer', flexShrink: 0,
                 }}
               >
@@ -917,10 +1003,10 @@ export function MobileConversation({
         aria-label="Open chronicle"
         style={{
           position: 'absolute',
-          right: 14,
-          bottom: 76,
-          width: 50,
-          height: 50,
+          right: 16,
+          bottom: 92,
+          width: 60,
+          height: 60,
           borderRadius: '50%',
           background: 'var(--vellum)',
           border: '1.5px solid var(--rule)',
@@ -935,8 +1021,8 @@ export function MobileConversation({
       >
         <span
           style={{
-            width: 8,
-            height: 8,
+            width: 10,
+            height: 10,
             borderRadius: '50%',
             background: 'var(--ember)',
             border: '2px solid var(--vellum)',
@@ -947,7 +1033,7 @@ export function MobileConversation({
             zIndex: 2,
           }}
         />
-        <SamPortrait size={46} ring={false} />
+        <SamPortrait size={56} ring={false} />
       </button>
 
       {/* Repo info subhead — kept minimal so chrome stays out of the way */}
@@ -1083,11 +1169,11 @@ function PStat({
     gold: 'var(--gold)',
   } as const;
   return (
-    <div style={{ textAlign: 'center', minWidth: 60 }}>
+    <div style={{ textAlign: 'center', minWidth: 70 }}>
       <div
         style={{
           fontFamily: 'var(--serif-display)',
-          fontSize: 26,
+          fontSize: 32,
           fontWeight: 500,
           lineHeight: 1,
           color: colors[tone],
@@ -1097,7 +1183,7 @@ function PStat({
       </div>
       <div
         className="sw-smallcaps"
-        style={{ fontSize: 9, marginTop: 2, whiteSpace: 'nowrap' }}
+        style={{ fontSize: 10.5, marginTop: 4, whiteSpace: 'nowrap' }}
       >
         {l}
       </div>
@@ -1109,7 +1195,7 @@ function PSectionLabel({ folio, label }: { folio: string; label: string }) {
   return (
     <div
       className="sw-smallcaps"
-      style={{ fontSize: 9.5, marginBottom: 7, whiteSpace: 'nowrap' }}
+      style={{ fontSize: 11, marginBottom: 10, whiteSpace: 'nowrap' }}
     >
       <span className="sw-folio" style={{ marginRight: 6 }}>
         {folio}
@@ -1129,7 +1215,7 @@ function PCompanion({
       onClick={onSelect}
       style={{
         flex: 1,
-        padding: '8px 8px',
+        padding: '12px 8px',
         background: selected ? 'var(--ink)' : 'var(--vellum)',
         color: selected ? 'var(--vellum)' : 'var(--ink)',
         border: '1px solid ' + (selected ? 'var(--ink)' : 'var(--rule-soft)'),
@@ -1161,7 +1247,7 @@ function PRepo({
       onClick={onClick}
       title={repo.path}
       style={{
-        padding: '6px 8px',
+        padding: '8px 8px',
         background: selected ? 'rgba(184,89,58,0.08)' : 'transparent',
         borderLeft: pinned
           ? '2px solid var(--ember)'
@@ -1176,7 +1262,7 @@ function PRepo({
     >
       <span
         style={{
-          fontSize: 12,
+          fontSize: 13,
           color: italic ? 'var(--ink-soft)' : 'var(--ink)',
           fontStyle: italic ? 'italic' : 'normal',
           fontFamily: italic ? 'var(--serif-display)' : 'var(--mono)',
@@ -1193,7 +1279,7 @@ function PRepo({
         <span
           className="sw-mono"
           style={{
-            fontSize: 10,
+            fontSize: 10.5,
             color: 'var(--ember)',
             whiteSpace: 'nowrap',
             flexShrink: 0,
@@ -1223,10 +1309,10 @@ function PPill({ hub }: { hub: Hub }) {
   return (
     <div
       style={{
-        padding: '6px 12px',
+        padding: '10px 14px',
         background: hub.cozy ? 'var(--parchment-3)' : 'var(--vellum)',
         border: '1px solid var(--rule-soft)',
-        borderRadius: 18,
+        borderRadius: 22,
         display: 'flex',
         alignItems: 'center',
         gap: 6,
@@ -1236,7 +1322,7 @@ function PPill({ hub }: { hub: Hub }) {
       <span
         style={{
           fontFamily: 'var(--serif-display)',
-          fontSize: 13,
+          fontSize: 15,
           fontStyle: 'italic',
           whiteSpace: 'nowrap',
         }}
@@ -1245,7 +1331,7 @@ function PPill({ hub }: { hub: Hub }) {
       </span>
       <span
         className="sw-mono"
-        style={{ fontSize: 10, color: 'var(--ink-faint)' }}
+        style={{ fontSize: 11, color: 'var(--ink-faint)' }}
       >
         {hub.count}
       </span>

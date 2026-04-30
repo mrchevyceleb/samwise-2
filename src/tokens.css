@@ -114,13 +114,13 @@
   font-family: var(--serif-display);
   font-style: italic;
   color: var(--ink-faint);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 /* Mono / terminal block */
 .sw-mono {
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: 14px;
   line-height: 1.55;
 }
 
@@ -189,8 +189,8 @@
 /* Buttons */
 .sw-btn {
   font-family: var(--serif-body);
-  font-size: 14px;
-  padding: 7px 14px;
+  font-size: 16px;
+  padding: 10px 18px;
   border-radius: 999px;
   border: 1px solid var(--rule);
   background: var(--vellum);
@@ -198,6 +198,7 @@
   cursor: pointer;
   letter-spacing: 0.01em;
   transition: background 0.15s, border-color 0.15s;
+  min-height: 40px;
 }
 .sw-btn:hover { background: #fff; border-color: var(--ink-soft); }
 .sw-btn-primary,

@@ -151,6 +151,11 @@ export default function App() {
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
+            liveSessions={liveSessions}
+            onSelectLive={(s) => {
+              const target = repos.find((r) => r.path === s.cwd);
+              if (target) setForth({ companion: s.cli, repo: target });
+            }}
             theme={theme}
             onToggleTheme={toggleTheme}
           />

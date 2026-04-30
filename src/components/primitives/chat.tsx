@@ -11,13 +11,13 @@ export function SamMessage({
   folio,
 }: { children: ReactNode; time?: string; folio?: string }) {
   return (
-    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', marginBottom: 18 }}>
-      <SamPortrait size={32} />
+    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', marginBottom: 22 }}>
+      <SamPortrait size={36} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{
             display: 'flex',
-            gap: 10,
+            gap: 12,
             alignItems: 'baseline',
             marginBottom: 5,
             flexWrap: 'wrap',
@@ -27,7 +27,7 @@ export function SamMessage({
             style={{
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
-              fontSize: 14,
+              fontSize: 16,
               color: 'var(--ink-2)',
               whiteSpace: 'nowrap',
             }}
@@ -35,14 +35,14 @@ export function SamMessage({
             Samwise
           </span>
           {time && (
-            <span className="sw-folio" style={{ whiteSpace: 'nowrap' }}>
+            <span className="sw-folio" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
               {time}
             </span>
           )}
           {folio && (
             <span
               className="sw-folio"
-              style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0 }}
+              style={{ marginLeft: 'auto', whiteSpace: 'nowrap', flexShrink: 0, fontSize: 12 }}
             >
               {folio}
             </span>
@@ -51,8 +51,8 @@ export function SamMessage({
         <div
           style={{
             fontFamily: 'var(--serif-body)',
-            fontSize: 15.5,
-            lineHeight: 1.55,
+            fontSize: 19,
+            lineHeight: 1.6,
             color: 'var(--ink)',
           }}
         >
@@ -71,23 +71,23 @@ export function UserMessage({
   time,
 }: { children: ReactNode; time?: string }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 18 }}>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 22 }}>
       <div style={{ maxWidth: '85%' }}>
         <div
           style={{
             display: 'flex',
-            gap: 10,
+            gap: 12,
             alignItems: 'baseline',
             marginBottom: 5,
             justifyContent: 'flex-end',
           }}
         >
           {time && (
-            <span className="sw-folio" style={{ whiteSpace: 'nowrap' }}>
+            <span className="sw-folio" style={{ whiteSpace: 'nowrap', fontSize: 12 }}>
               {time}
             </span>
           )}
-          <span className="sw-smallcaps" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+          <span className="sw-smallcaps" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
             You
           </span>
         </div>
@@ -95,11 +95,11 @@ export function UserMessage({
           style={{
             background: 'var(--ink)',
             color: 'var(--vellum)',
-            padding: '10px 14px',
+            padding: '12px 16px',
             borderRadius: 14,
             fontFamily: 'var(--serif-body)',
-            fontSize: 15.5,
-            lineHeight: 1.5,
+            fontSize: 19,
+            lineHeight: 1.55,
             boxShadow: '0 1px 0 var(--shadow-warm)',
           }}
         >
@@ -130,9 +130,9 @@ export function ToolCall({
     <div
       style={{
         borderLeft: '2px solid var(--rule)',
-        paddingLeft: 12,
-        marginTop: 8,
-        marginBottom: 8,
+        paddingLeft: 14,
+        marginTop: 10,
+        marginBottom: 10,
         minWidth: 0,
         maxWidth: '100%',
         overflow: 'hidden',
@@ -141,7 +141,7 @@ export function ToolCall({
       <div
         style={{
           display: 'flex',
-          gap: 8,
+          gap: 10,
           alignItems: 'baseline',
           marginBottom: 4,
           flexWrap: 'wrap',
@@ -150,13 +150,13 @@ export function ToolCall({
       >
         <span
           className="sw-smallcaps"
-          style={{ fontSize: 10, color: 'var(--ember)', whiteSpace: 'nowrap' }}
+          style={{ fontSize: 11, color: 'var(--ember)', whiteSpace: 'nowrap' }}
         >
           {running ? 'Running' : status === 'done' ? 'Ran' : status}
         </span>
         <span
           className="sw-mono"
-          style={{ color: 'var(--ink-2)', fontSize: 12, whiteSpace: 'nowrap' }}
+          style={{ color: 'var(--ink-2)', fontSize: 13.5, whiteSpace: 'nowrap' }}
         >
           {tool}
         </span>
@@ -165,7 +165,7 @@ export function ToolCall({
             className="sw-mono"
             style={{
               color: 'var(--ink-faint)',
-              fontSize: 12,
+              fontSize: 13.5,
               wordBreak: 'break-all',
               overflowWrap: 'anywhere',
               minWidth: 0,
@@ -188,7 +188,7 @@ export function ToolCall({
           className="sw-mono"
           style={{
             color: 'var(--ink-soft)',
-            fontSize: 12,
+            fontSize: 13.5,
             paddingLeft: 0,
             wordBreak: 'break-all',
             overflowWrap: 'anywhere',
@@ -468,7 +468,7 @@ export function ChatInput({
         background: 'var(--vellum)',
         border: '1px solid var(--rule)',
         borderRadius: 2,
-        padding: '12px 14px 10px',
+        padding: '16px 18px 14px',
         boxShadow: '0 1px 0 var(--shadow-warm)',
       }}
     >
@@ -476,20 +476,20 @@ export function ChatInput({
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          marginBottom: 8,
-          paddingBottom: 6,
+          gap: 10,
+          marginBottom: 10,
+          paddingBottom: 8,
           borderBottom: '1px dashed var(--rule-soft)',
         }}
       >
-        <span className="sw-smallcaps" style={{ fontSize: 10, whiteSpace: 'nowrap' }}>
+        <span className="sw-smallcaps" style={{ fontSize: 11.5, whiteSpace: 'nowrap' }}>
           Companion
         </span>
         <span
           style={{
             fontFamily: 'var(--serif-display)',
             fontStyle: 'italic',
-            fontSize: 13,
+            fontSize: 15,
             color: 'var(--ink)',
             whiteSpace: 'nowrap',
           }}
@@ -502,7 +502,7 @@ export function ChatInput({
             <span
               className="sw-mono"
               style={{
-                fontSize: 11.5,
+                fontSize: 13,
                 color: 'var(--ink-soft)',
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
@@ -597,7 +597,7 @@ export function ChatInput({
           }
         }}
         placeholder={placeholder}
-        rows={1}
+        rows={2}
         style={{
           width: '100%',
           resize: 'none',
@@ -605,10 +605,11 @@ export function ChatInput({
           outline: 'none',
           background: 'transparent',
           fontFamily: 'var(--serif-body)',
-          fontSize: 15,
-          lineHeight: 1.5,
+          fontSize: 19,
+          lineHeight: 1.55,
           color: 'var(--ink)',
           fontStyle: v ? 'normal' : 'italic',
+          minHeight: 64,
           maxHeight: '40dvh',
           overflowY: 'auto',
         }}
@@ -624,15 +625,15 @@ export function ChatInput({
           if (fileInputRef.current) fileInputRef.current.value = '';
         }}
       />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-        <span className="sw-folio" style={{ fontStyle: 'italic' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+        <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
           ↵ to send · ⇧↵ for new line
         </span>
         <span style={{ marginLeft: 'auto' }}></span>
         {acceptImages && (
           <button
             className="sw-btn"
-            style={{ fontSize: 12, padding: '4px 10px' }}
+            style={{ fontSize: 14, padding: '8px 14px' }}
             onClick={() => fileInputRef.current?.click()}
           >
             Attach
@@ -640,7 +641,7 @@ export function ChatInput({
         )}
         <button
           className="sw-btn sw-btn-primary"
-          style={{ fontSize: 12, padding: '4px 14px' }}
+          style={{ fontSize: 14, padding: '8px 18px' }}
           onClick={submit}
           title={busy ? 'stop the current turn and redirect Sam with this prompt' : undefined}
         >

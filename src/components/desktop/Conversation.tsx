@@ -97,88 +97,6 @@ export function Conversation({
         minWidth: 0,
       }}
     >
-      {/* Top bar: back link + context meter + fresh-thread action. */}
-      {(onBack || onFreshStart || usage) && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            padding: '12px 24px',
-            borderBottom: '1px solid var(--rule-soft)',
-            background: 'var(--vellum)',
-            gap: 16,
-          }}
-        >
-          {onBack && (
-            <button
-              onClick={onBack}
-              style={{
-                background: 'transparent',
-                border: 0,
-                padding: 0,
-                fontFamily: 'var(--serif-display)',
-                fontStyle: 'italic',
-                fontSize: 14,
-                color: 'var(--ember)',
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              ← the threshold
-            </button>
-          )}
-          <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14 }}>
-            {usage && (
-              <ContextMeter
-                fraction={usage.fraction}
-                inputTokens={usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens}
-                windowTokens={usage.windowTokens}
-              />
-            )}
-            {onStop && status === 'streaming' && (
-              <button
-                onClick={onStop}
-                title="stop the in-flight turn (next message will resume the conversation)"
-                style={{
-                  background: 'var(--ember)',
-                  color: 'var(--vellum)',
-                  border: 0,
-                  borderRadius: 999,
-                  padding: '4px 14px',
-                  fontFamily: 'var(--serif-display)',
-                  fontStyle: 'italic',
-                  fontSize: 12.5,
-                  cursor: 'pointer',
-                }}
-              >
-                ■ stop
-              </button>
-            )}
-            {onFreshStart && (
-              <button
-                onClick={onFreshStart}
-                title="kill the warm process, drop saved memory, start a new thread"
-                style={{
-                  background: 'transparent',
-                  border: '1px solid var(--rule-soft)',
-                  borderRadius: 999,
-                  padding: '4px 12px',
-                  fontFamily: 'var(--serif-display)',
-                  fontStyle: 'italic',
-                  fontSize: 12.5,
-                  color: 'var(--ink-soft)',
-                  cursor: 'pointer',
-                }}
-              >
-                ↻ fresh thread
-              </button>
-            )}
-          </span>
-        </div>
-      )}
-
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -187,28 +105,28 @@ export function Conversation({
           flex: 1,
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '20px 0 0',
+          padding: '28px 0 0',
         }}
       >
-        <div style={{ maxWidth: 660, margin: '0 auto', padding: '0 40px' }}>
+        <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 48px' }}>
           <div
             style={{
               textAlign: 'center',
-              marginBottom: 8,
+              marginBottom: 10,
               display: 'flex',
               justifyContent: 'center',
             }}
           >
-            <SamPortrait size={36} />
+            <SamPortrait size={44} />
           </div>
-          <div className="sw-folio" style={{ textAlign: 'center', marginBottom: 6 }}>
+          <div className="sw-folio" style={{ textAlign: 'center', marginBottom: 8, fontSize: 13 }}>
             errand · {todayLabel()}
           </div>
           <h1
             style={{
               margin: 0,
               fontFamily: 'var(--serif-display)',
-              fontSize: 38,
+              fontSize: 48,
               fontWeight: 500,
               color: 'var(--ink)',
               textAlign: 'center',
@@ -221,10 +139,10 @@ export function Conversation({
           <div
             style={{
               textAlign: 'center',
-              marginTop: 8,
+              marginTop: 12,
               display: 'flex',
               justifyContent: 'center',
-              gap: 8,
+              gap: 10,
               flexWrap: 'wrap',
             }}
           >
@@ -234,7 +152,70 @@ export function Conversation({
             <Chip tone="neutral">{agent.toLowerCase()}</Chip>
             {repo && <Chip tone="neutral">{repo}</Chip>}
           </div>
-          <div className="sw-ornament" style={{ margin: '24px 0 28px' }}>
+          {(onBack || onFreshStart || usage || (onStop && status === 'streaming')) && (
+            <div
+              style={{
+                marginTop: 12,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                flexWrap: 'wrap',
+              }}
+            >
+              {onBack && (
+                <button
+                  onClick={onBack}
+                  className="sw-btn"
+                  style={{
+                    fontSize: 12.5,
+                    padding: '4px 12px',
+                    minHeight: 0,
+                    fontFamily: 'var(--serif-display)',
+                    fontStyle: 'italic',
+                    color: 'var(--ember)',
+                  }}
+                >
+                  the threshold
+                </button>
+              )}
+              {usage && (
+                <ContextMeter
+                  fraction={usage.fraction}
+                  inputTokens={usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens}
+                  windowTokens={usage.windowTokens}
+                />
+              )}
+              {onStop && status === 'streaming' && (
+                <button
+                  onClick={onStop}
+                  title="stop the in-flight turn (next message will resume the conversation)"
+                  className="sw-btn sw-btn-ember"
+                  style={{ fontSize: 12.5, padding: '4px 12px', minHeight: 0 }}
+                >
+                  stop
+                </button>
+              )}
+              {onFreshStart && (
+                <button
+                  onClick={onFreshStart}
+                  title="kill the warm process, drop saved memory, start a new thread"
+                  className="sw-btn"
+                  style={{
+                    fontSize: 12.5,
+                    padding: '4px 12px',
+                    minHeight: 0,
+                    fontFamily: 'var(--serif-display)',
+                    fontStyle: 'italic',
+                    color: 'var(--ink-soft)',
+                  }}
+                >
+                  fresh thread
+                </button>
+              )}
+            </div>
+          )}
+          <div className="sw-ornament" style={{ margin: '32px 0 36px' }}>
             <Dinkus />
           </div>
 
@@ -285,12 +266,12 @@ export function Conversation({
 
       <div
         style={{
-          padding: '14px 0 22px',
+          padding: '18px 0 26px',
           borderTop: '1px solid var(--rule-soft)',
           background: 'var(--vellum)',
         }}
       >
-        <div style={{ maxWidth: 660, margin: '0 auto', padding: '0 40px' }}>
+        <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 48px' }}>
           <ChatInput
             agent={agent}
             repo={repo}
