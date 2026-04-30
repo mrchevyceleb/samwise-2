@@ -19,9 +19,11 @@ type ConversationProps = {
   status: Status;
   errorText?: string | null;
   usage?: { inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; fraction: number; windowTokens: number } | null;
-  onSend?: (message: string) => void;
+  onSend?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onBack?: () => void;
   onFreshStart?: () => void;
+  onStop?: () => void;
+  acceptImages?: boolean;
 };
 
 const statusToneByStatus: Record<Status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -53,14 +55,27 @@ export function Conversation({
   onSend,
   onBack,
   onFreshStart,
+  onStop,
+  acceptImages = true,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickyRef = useRef(true);
 
+  // Pin to bottom on every blocks update — but only if the user is already
+  // near the bottom. If they've scrolled up to read something, leave them
+  // alone instead of fighting their thumb on every text-delta.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [blocks.length, status]);
+    if (stickyRef.current) el.scrollTop = el.scrollHeight;
+  }, [blocks, status]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickyRef.current = distanceFromBottom < 120;
+  };
 
   return (
     <div
@@ -112,6 +127,25 @@ export function Conversation({
                 windowTokens={usage.windowTokens}
               />
             )}
+            {onStop && status === 'streaming' && (
+              <button
+                onClick={onStop}
+                title="stop the in-flight turn (next message will resume the conversation)"
+                style={{
+                  background: 'var(--ember)',
+                  color: 'var(--vellum)',
+                  border: 0,
+                  borderRadius: 999,
+                  padding: '4px 14px',
+                  fontFamily: 'var(--serif-display)',
+                  fontStyle: 'italic',
+                  fontSize: 12.5,
+                  cursor: 'pointer',
+                }}
+              >
+                ■ stop
+              </button>
+            )}
             {onFreshStart && (
               <button
                 onClick={onFreshStart}
@@ -137,8 +171,14 @@ export function Conversation({
 
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         className="sw-scroll"
-        style={{ flex: 1, overflowY: 'auto', padding: '20px 0 0' }}
+        style={{
+          flex: 1,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          padding: '20px 0 0',
+        }}
       >
         <div style={{ maxWidth: 660, margin: '0 auto', padding: '0 40px' }}>
           <div
@@ -245,6 +285,7 @@ export function Conversation({
             repo={repo}
             placeholder="speak, master…"
             onSend={onSend}
+            acceptImages={acceptImages}
           />
         </div>
       </div>

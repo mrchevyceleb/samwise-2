@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { SamPortrait } from './atoms';
 
@@ -133,20 +133,45 @@ export function ToolCall({
         paddingLeft: 12,
         marginTop: 8,
         marginBottom: 8,
+        minWidth: 0,
+        maxWidth: '100%',
+        overflow: 'hidden',
       }}
     >
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 8,
+          alignItems: 'baseline',
+          marginBottom: 4,
+          flexWrap: 'wrap',
+          minWidth: 0,
+        }}
+      >
         <span
           className="sw-smallcaps"
-          style={{ fontSize: 10, color: 'var(--ember)' }}
+          style={{ fontSize: 10, color: 'var(--ember)', whiteSpace: 'nowrap' }}
         >
           {running ? 'Running' : status === 'done' ? 'Ran' : status}
         </span>
-        <span className="sw-mono" style={{ color: 'var(--ink-2)', fontSize: 12 }}>
+        <span
+          className="sw-mono"
+          style={{ color: 'var(--ink-2)', fontSize: 12, whiteSpace: 'nowrap' }}
+        >
           {tool}
         </span>
         {args && (
-          <span className="sw-mono" style={{ color: 'var(--ink-faint)', fontSize: 12 }}>
+          <span
+            className="sw-mono"
+            style={{
+              color: 'var(--ink-faint)',
+              fontSize: 12,
+              wordBreak: 'break-all',
+              overflowWrap: 'anywhere',
+              minWidth: 0,
+              flex: '1 1 100%',
+            }}
+          >
             ({args})
           </span>
         )}
@@ -161,7 +186,13 @@ export function ToolCall({
       {result && (
         <div
           className="sw-mono"
-          style={{ color: 'var(--ink-soft)', fontSize: 12, paddingLeft: 0 }}
+          style={{
+            color: 'var(--ink-soft)',
+            fontSize: 12,
+            paddingLeft: 0,
+            wordBreak: 'break-all',
+            overflowWrap: 'anywhere',
+          }}
         >
           {result}
         </div>
@@ -337,6 +368,8 @@ export function DiffBlock({
 // ─────────────────────────────────────────────
 // ChatInput — quill-and-paper composer
 // ─────────────────────────────────────────────
+export type ChatImage = { id: string; mediaType: string; base64: string; previewUrl: string };
+
 export function ChatInput({
   value,
   onChange,
@@ -344,17 +377,32 @@ export function ChatInput({
   placeholder = 'Speak, master.',
   agent = 'Claude Code',
   repo = '',
+  acceptImages = true,
 }: {
   value?: string;
   onChange?: (v: string) => void;
-  onSend?: (v: string) => void;
+  onSend?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   placeholder?: string;
   agent?: string;
   repo?: string;
+  acceptImages?: boolean;
 }) {
   const [internal, setInternal] = useState(value ?? '');
   const isControlled = value !== undefined;
   const v = isControlled ? value : internal;
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [images, setImages] = useState<ChatImage[]>([]);
+
+  // Auto-grow with content. The browser sets scrollHeight to whatever the
+  // content needs; reset to auto first so it can shrink too. Capped via
+  // max-height in the style block below.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [v]);
 
   const setV = (next: string) => {
     if (!isControlled) setInternal(next);
@@ -362,9 +410,48 @@ export function ChatInput({
   };
 
   const submit = () => {
-    if (!v.trim()) return;
-    onSend?.(v);
+    if (!v.trim() && images.length === 0) return;
+    onSend?.(
+      v,
+      images.length ? images.map((i) => ({ mediaType: i.mediaType, base64: i.base64 })) : undefined,
+    );
+    setImages((prev) => {
+      for (const img of prev) URL.revokeObjectURL(img.previewUrl);
+      return [];
+    });
     if (!isControlled) setInternal('');
+  };
+
+  const ingestFiles = async (files: FileList | File[]) => {
+    if (!acceptImages) return;
+    const next: ChatImage[] = [];
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith('image/')) continue;
+      const buf = new Uint8Array(await f.arrayBuffer());
+      // chunked btoa to avoid call-stack overflow on large files
+      let bin = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < buf.length; i += chunk) {
+        bin += String.fromCharCode(...buf.subarray(i, i + chunk));
+      }
+      const base64 = btoa(bin);
+      const previewUrl = URL.createObjectURL(f);
+      next.push({
+        id: `img${Math.random().toString(36).slice(2, 8)}`,
+        mediaType: f.type,
+        base64,
+        previewUrl,
+      });
+    }
+    if (next.length) setImages((prev) => [...prev, ...next]);
+  };
+
+  const removeImage = (id: string) => {
+    setImages((prev) => {
+      const target = prev.find((i) => i.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((i) => i.id !== id);
+    });
   };
 
   return (
@@ -426,7 +513,59 @@ export function ChatInput({
           ⌘K to switch
         </span>
       </div>
+      {images.length > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            gap: 6,
+            flexWrap: 'wrap',
+            marginBottom: 8,
+          }}
+        >
+          {images.map((img) => (
+            <div
+              key={img.id}
+              style={{
+                position: 'relative',
+                width: 56,
+                height: 56,
+                borderRadius: 4,
+                overflow: 'hidden',
+                border: '1px solid var(--rule-soft)',
+              }}
+            >
+              <img
+                src={img.previewUrl}
+                alt="attached"
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+              <button
+                onClick={() => removeImage(img.id)}
+                aria-label="remove"
+                style={{
+                  position: 'absolute',
+                  top: 2,
+                  right: 2,
+                  width: 18,
+                  height: 18,
+                  borderRadius: '50%',
+                  border: 0,
+                  background: 'rgba(0,0,0,0.6)',
+                  color: '#fff',
+                  fontSize: 11,
+                  lineHeight: 1,
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <textarea
+        ref={taRef}
         value={v}
         onChange={(e) => setV(e.target.value)}
         onKeyDown={(e) => {
@@ -435,8 +574,22 @@ export function ChatInput({
             submit();
           }
         }}
+        onPaste={(e) => {
+          if (!acceptImages) return;
+          const files: File[] = [];
+          for (const item of Array.from(e.clipboardData.items)) {
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+              const f = item.getAsFile();
+              if (f) files.push(f);
+            }
+          }
+          if (files.length) {
+            e.preventDefault();
+            void ingestFiles(files);
+          }
+        }}
         placeholder={placeholder}
-        rows={2}
+        rows={1}
         style={{
           width: '100%',
           resize: 'none',
@@ -448,6 +601,19 @@ export function ChatInput({
           lineHeight: 1.5,
           color: 'var(--ink)',
           fontStyle: v ? 'normal' : 'italic',
+          maxHeight: '40dvh',
+          overflowY: 'auto',
+        }}
+      />
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept="image/*"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          if (e.target.files) void ingestFiles(e.target.files);
+          if (fileInputRef.current) fileInputRef.current.value = '';
         }}
       />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
@@ -455,9 +621,15 @@ export function ChatInput({
           ↵ to send · ⇧↵ for new line
         </span>
         <span style={{ marginLeft: 'auto' }}></span>
-        <button className="sw-btn" style={{ fontSize: 12, padding: '4px 10px' }}>
-          Attach
-        </button>
+        {acceptImages && (
+          <button
+            className="sw-btn"
+            style={{ fontSize: 12, padding: '4px 10px' }}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Attach
+          </button>
+        )}
         <button
           className="sw-btn sw-btn-primary"
           style={{ fontSize: 12, padding: '4px 14px' }}

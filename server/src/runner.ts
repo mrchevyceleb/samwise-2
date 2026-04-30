@@ -35,8 +35,10 @@ const ASSISTANT_AGENT_PROMPT =
   "client dashboards, and personal automation. Address him directly. Stay terse.";
 
 // Each session keeps a rolling tail of recent events so a reconnecting client
-// gets the in-flight turn's output even if its WS dropped mid-stream.
-const EVENT_BUFFER_SIZE = 300;
+// gets the in-flight turn's output even if its WS dropped mid-stream. Bigger
+// is better here — claude emits ~30+ events per turn and the user might run a
+// dozen turns before reconnecting; old events fall off the tail.
+const EVENT_BUFFER_SIZE = 2000;
 
 export type SeqEvent = { seq: number; ev: SessionEvent };
 
@@ -148,7 +150,7 @@ class ClaudeSession {
   private turnStartedAt: number | null = null;
 
   /** Send a user message into the running CLI as one turn. */
-  send(text: string): void {
+  send(text: string, images?: Array<{ mediaType: string; base64: string }>): void {
     if (this.child.exitCode !== null) {
       this.emit({ type: 'error', message: 'session has exited' });
       return;
@@ -157,10 +159,35 @@ class ClaudeSession {
     // Echo the user message into our event log so reconnecting clients can
     // replay the full conversation, not just Sam's responses (claude doesn't
     // re-emit the user turn in its stream).
-    this.emit({ type: 'event', event: { type: '_user_echo', text, ts: Date.now() } });
+    this.emit({
+      type: 'event',
+      event: {
+        type: '_user_echo',
+        text,
+        imageCount: images?.length ?? 0,
+        ts: Date.now(),
+      },
+    });
+    // Build claude's content array. Images come first so claude sees them
+    // before the prompt.
+    const content: Array<any> = [];
+    if (images && images.length) {
+      for (const img of images) {
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
+        });
+      }
+    }
+    if (text) content.push({ type: 'text', text });
     const payload = JSON.stringify({
       type: 'user',
-      message: { role: 'user', content: text },
+      message: {
+        role: 'user',
+        content: content.length === 1 && content[0].type === 'text' && !images?.length
+          ? text
+          : content,
+      },
     });
     try {
       this.child.stdin.write(payload + '\n');
@@ -173,6 +200,13 @@ class ClaudeSession {
   shutdown(): void {
     try { this.child.stdin.end(); } catch {}
     try { this.child.kill('SIGTERM'); } catch {}
+  }
+
+  /** Same as shutdown, but framed for the user's "stop" button — keeps the
+   *  saved session_id so the next message resumes the conversation. */
+  interrupt(): void {
+    this.emit({ type: 'event', event: { type: '_interrupted', ts: Date.now() } });
+    this.shutdown();
   }
 
   isAlive(): boolean {
@@ -373,6 +407,23 @@ export function dropSession(cli: CliKind, repoPath: string): void {
   const s = sessions.get(key);
   if (s) {
     s.shutdown();
+    sessions.delete(key);
+  }
+}
+
+/** Interrupt the in-flight turn for this (cli, repo) pair. Preserves the
+ *  saved session_id so the next message resumes the conversation. */
+export async function interruptSession(opts: { cli: CliKind; repoPath: string }): Promise<void> {
+  if (opts.cli === 'codex') {
+    const { interruptCodex } = await import('./codex-runner.ts');
+    interruptCodex({ repoPath: opts.repoPath });
+    return;
+  }
+  const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
+  const key = keyOf(opts.cli, cwd);
+  const s = sessions.get(key);
+  if (s) {
+    s.interrupt();
     sessions.delete(key);
   }
 }

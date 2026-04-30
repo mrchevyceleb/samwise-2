@@ -11,6 +11,50 @@ function timeLabel(ts: number): string {
   const d = new Date(ts);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+
+function MobileGrowingInput({
+  value,
+  onChange,
+  onSubmit,
+}: { value: string; onChange: (v: string) => void; onSubmit: () => void }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          onSubmit();
+        }
+      }}
+      placeholder="speak, master…"
+      rows={1}
+      style={{
+        flex: 1,
+        border: 0,
+        outline: 'none',
+        background: 'transparent',
+        fontFamily: 'var(--serif-body)',
+        fontStyle: value ? 'normal' : 'italic',
+        color: value ? 'var(--ink)' : 'var(--ink-faint)',
+        fontSize: 16,
+        resize: 'none',
+        maxHeight: '35dvh',
+        overflowY: 'auto',
+        lineHeight: 1.4,
+        minWidth: 0,
+      }}
+    />
+  );
+}
 import {
   COMPANIONS,
   SPECIAL_REPOS,
@@ -365,6 +409,8 @@ export function MobileConversation({
   onOpenChronicle,
   onSend,
   onFreshStart,
+  onStop,
+  acceptImages = true,
 }: {
   agent?: string;
   repo?: string;
@@ -375,21 +421,70 @@ export function MobileConversation({
   usage?: { fraction: number; inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; windowTokens: number } | null;
   onBack: () => void;
   onOpenChronicle: () => void;
-  onSend?: (message: string) => void;
+  onSend?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onFreshStart?: () => void;
+  onStop?: () => void;
+  acceptImages?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [pendingImages, setPendingImages] = useState<Array<{ id: string; mediaType: string; base64: string; previewUrl: string }>>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickyRef = useRef(true);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [blocks.length, status]);
+    if (stickyRef.current) el.scrollTop = el.scrollHeight;
+  }, [blocks, status]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickyRef.current = distanceFromBottom < 120;
+  };
+
+  const ingestFiles = async (files: FileList | File[]) => {
+    if (!acceptImages) return;
+    const next: Array<{ id: string; mediaType: string; base64: string; previewUrl: string }> = [];
+    for (const f of Array.from(files)) {
+      if (!f.type.startsWith('image/')) continue;
+      const buf = new Uint8Array(await f.arrayBuffer());
+      let bin = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < buf.length; i += chunk) {
+        bin += String.fromCharCode(...buf.subarray(i, i + chunk));
+      }
+      const base64 = btoa(bin);
+      next.push({
+        id: `img${Math.random().toString(36).slice(2, 8)}`,
+        mediaType: f.type,
+        base64,
+        previewUrl: URL.createObjectURL(f),
+      });
+    }
+    if (next.length) setPendingImages((prev) => [...prev, ...next]);
+  };
+
+  const removeImage = (id: string) => {
+    setPendingImages((prev) => {
+      const target = prev.find((i) => i.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((i) => i.id !== id);
+    });
+  };
 
   const submit = () => {
-    if (!draft.trim()) return;
-    onSend?.(draft);
+    if (!draft.trim() && pendingImages.length === 0) return;
+    onSend?.(
+      draft,
+      pendingImages.length
+        ? pendingImages.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
+        : undefined,
+    );
+    for (const i of pendingImages) URL.revokeObjectURL(i.previewUrl);
+    setPendingImages([]);
     setDraft('');
   };
 
@@ -513,10 +608,12 @@ export function MobileConversation({
       {/* Reading column */}
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         className="sw-scroll"
         style={{
           flex: 1,
           overflowY: 'auto',
+          overflowX: 'hidden',
           padding: '18px 20px 10px',
           background: 'var(--vellum)',
         }}
@@ -621,56 +718,184 @@ export function MobileConversation({
           background: 'var(--parchment-2)',
         }}
       >
+        {/* Quick "back to errands" pill above composer so a long chat
+            doesn't make you scroll all the way up to leave. */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            marginBottom: 6,
+            padding: '0 4px',
+          }}
+        >
+          <button
+            onClick={onBack}
+            style={{
+              background: 'transparent',
+              border: 0,
+              padding: 0,
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 12,
+              color: 'var(--ember)',
+              cursor: 'pointer',
+            }}
+          >
+            ← errands
+          </button>
+          {pendingImages.length > 0 && (
+            <span className="sw-folio" style={{ fontSize: 10.5, fontStyle: 'italic' }}>
+              {pendingImages.length} image{pendingImages.length === 1 ? '' : 's'} attached
+            </span>
+          )}
+        </div>
+        {pendingImages.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            {pendingImages.map((img) => (
+              <div
+                key={img.id}
+                style={{
+                  position: 'relative',
+                  width: 56,
+                  height: 56,
+                  borderRadius: 4,
+                  overflow: 'hidden',
+                  border: '1px solid var(--rule-soft)',
+                  flexShrink: 0,
+                }}
+              >
+                <img
+                  src={img.previewUrl}
+                  alt="attached"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                />
+                <button
+                  onClick={() => removeImage(img.id)}
+                  aria-label="remove"
+                  style={{
+                    position: 'absolute',
+                    top: 2,
+                    right: 2,
+                    width: 18,
+                    height: 18,
+                    borderRadius: '50%',
+                    border: 0,
+                    background: 'rgba(0,0,0,0.6)',
+                    color: '#fff',
+                    fontSize: 11,
+                    lineHeight: 1,
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div
           style={{
             background: 'var(--vellum)',
             borderRadius: 18,
             border: '1px solid var(--rule-soft)',
-            padding: '8px 12px',
+            padding: '8px 10px 8px 12px',
             display: 'flex',
-            alignItems: 'center',
-            gap: 10,
+            alignItems: 'flex-end',
+            gap: 8,
+          }}
+          onPaste={(e) => {
+            if (!acceptImages) return;
+            const files: File[] = [];
+            for (const item of Array.from(e.clipboardData.items)) {
+              if (item.kind === 'file' && item.type.startsWith('image/')) {
+                const f = item.getAsFile();
+                if (f) files.push(f);
+              }
+            }
+            if (files.length) {
+              e.preventDefault();
+              void ingestFiles(files);
+            }
           }}
         >
-          <input
+          <MobileGrowingInput
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            placeholder="speak, master…"
-            style={{
-              flex: 1,
-              border: 0,
-              outline: 'none',
-              background: 'transparent',
-              fontFamily: 'var(--serif-body)',
-              fontStyle: draft ? 'normal' : 'italic',
-              color: draft ? 'var(--ink)' : 'var(--ink-faint)',
-              fontSize: 14,
-            }}
+            onChange={setDraft}
+            onSubmit={submit}
           />
-          <button
-            onClick={submit}
-            style={{
-              width: 30,
-              height: 30,
-              borderRadius: '50%',
-              border: 0,
-              background: 'var(--ink)',
-              color: 'var(--vellum)',
-              fontFamily: 'var(--serif-display)',
-              fontSize: 16,
-              fontStyle: 'italic',
-              cursor: 'pointer',
-            }}
-          >
-            ↑
-          </button>
+          {acceptImages && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="attach image"
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: '50%',
+                border: '1px solid var(--rule-soft)',
+                background: 'transparent',
+                color: 'var(--ink-soft)',
+                fontSize: 16,
+                cursor: 'pointer',
+                flexShrink: 0,
+                padding: 0,
+              }}
+            >
+              📎
+            </button>
+          )}
+          {status === 'streaming' && onStop ? (
+            <button
+              onClick={onStop}
+              aria-label="stop"
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: '50%',
+                border: 0,
+                background: 'var(--ember)',
+                color: 'var(--vellum)',
+                fontFamily: 'var(--serif-display)',
+                fontSize: 14,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              ■
+            </button>
+          ) : (
+            <button
+              onClick={submit}
+              style={{
+                width: 30,
+                height: 30,
+                borderRadius: '50%',
+                border: 0,
+                background: 'var(--ink)',
+                color: 'var(--vellum)',
+                fontFamily: 'var(--serif-display)',
+                fontSize: 16,
+                fontStyle: 'italic',
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              ↑
+            </button>
+          )}
         </div>
+        <input
+          type="file"
+          ref={fileInputRef}
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            if (e.target.files) void ingestFiles(e.target.files);
+            if (fileInputRef.current) fileInputRef.current.value = '';
+          }}
+        />
       </div>
 
       {/* Chronicle FAB */}

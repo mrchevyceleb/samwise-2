@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
 
-const EVENT_BUFFER_SIZE = 300;
+const EVENT_BUFFER_SIZE = 2000;
 
 // Codex doesn't have a stdin-streaming mode (the way claude does with
 // --input-format stream-json), so each turn spawns a fresh `codex exec --json`
@@ -24,6 +24,7 @@ export class CodexSession {
   private threadId: string | null = null;
   private busy = false;
   private dead = false;
+  private currentChild: ChildProcess | null = null;
   private eventLog: SeqEvent[] = [];
   private nextSeq = 1;
   private lastActivityAtMs = Date.now();
@@ -64,6 +65,9 @@ export class CodexSession {
 
   shutdown(): void {
     this.dead = true;
+    if (this.currentChild) {
+      try { this.currentChild.kill('SIGTERM'); } catch {}
+    }
   }
 
   send(text: string): void {
@@ -89,6 +93,7 @@ export class CodexSession {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    this.currentChild = child;
 
     // Synthesize a claude-shaped message_start so the reducer's turn handling
     // stays consistent across CLIs.
@@ -318,6 +323,17 @@ export async function getOrCreateCodexSession(opts: { repoPath: string }): Promi
 export function shutdownAllCodexSessions(): void {
   for (const s of codexSessions.values()) s.shutdown();
   codexSessions.clear();
+}
+
+/** Kill the in-flight codex child but keep the thread id saved for resume. */
+export function interruptCodex(opts: { repoPath: string }): void {
+  const cwd = opts.repoPath;
+  const key = `codex|${cwd}`;
+  const s = codexSessions.get(key);
+  if (s) {
+    s.shutdown();
+    codexSessions.delete(key);
+  }
 }
 
 /** Drop the stored thread id so the next codex spawn starts a fresh thread. */

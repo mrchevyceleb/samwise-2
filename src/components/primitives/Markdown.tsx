@@ -52,7 +52,7 @@ export function Markdown({ children }: { children: string }) {
           code: (props: any) => {
             const { inline, children, className } = props;
             if (inline ?? !className) {
-              return <code className="sw-code-inline">{children}</code>;
+              return <code className="sw-code-inline" style={{ wordBreak: 'break-all' }}>{children}</code>;
             }
             return (
               <pre style={{
@@ -61,11 +61,13 @@ export function Markdown({ children }: { children: string }) {
                 borderRadius: 2,
                 padding: '8px 10px',
                 margin: '8px 0',
-                overflow: 'auto',
+                overflowX: 'auto',
+                maxWidth: '100%',
                 fontFamily: 'var(--mono)',
                 fontSize: 12,
                 lineHeight: 1.5,
                 color: 'var(--ink)',
+                whiteSpace: 'pre',
               }}><code>{children}</code></pre>
             );
           },

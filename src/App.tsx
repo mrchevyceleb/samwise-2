@@ -167,6 +167,8 @@ export default function App() {
             onOpenChronicle={() => setChronicleOpen(true)}
             onSend={chat.send}
             onFreshStart={chat.freshStart}
+            onStop={chat.stop}
+            acceptImages={companion !== 'codex'}
           />
         )}
         <MobileChronicleSheet
@@ -235,6 +237,8 @@ export default function App() {
             onSend={chat.send}
             onBack={goToThreshold}
             onFreshStart={chat.freshStart}
+            onStop={chat.stop}
+            acceptImages={companion !== 'codex'}
           />
         )}
       </main>

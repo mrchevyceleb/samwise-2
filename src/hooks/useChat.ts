@@ -166,6 +166,49 @@ function summarize(s: string): string {
   return `${firstLine.slice(0, 80)}…`;
 }
 
+function blocksStorageKey(cli: CompanionId, repoPath: string): string {
+  return `samwise-2:blocks:${cli}|${repoPath}`;
+}
+
+function readStoredBlocks(cli: CompanionId, repoPath: string): ChatBlock[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed as ChatBlock[];
+  } catch {}
+  return [];
+}
+
+function writeStoredBlocks(cli: CompanionId, repoPath: string, blocks: ChatBlock[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    // Cap stored blocks so localStorage doesn't grow unbounded.
+    const tail = blocks.slice(-200);
+    localStorage.setItem(blocksStorageKey(cli, repoPath), JSON.stringify(tail));
+  } catch {}
+}
+
+function readStoredSeq(cli: CompanionId, repoPath: string): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath) + ':seq');
+    if (raw) {
+      const n = Number(raw);
+      if (Number.isFinite(n)) return n;
+    }
+  } catch {}
+  return 0;
+}
+
+function writeStoredSeq(cli: CompanionId, repoPath: string, seq: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(blocksStorageKey(cli, repoPath) + ':seq', String(seq));
+  } catch {}
+}
+
 export function useChat(opts: {
   repo: Repo | undefined;
   cli: CompanionId;
@@ -192,17 +235,25 @@ export function useChat(opts: {
   /** Latest event seq received from server. Sent on reconnect for replay. */
   const lastSeqRef = useRef(-1);
 
+  // Save to localStorage whenever blocks change, so a refresh restores them.
+  useEffect(() => {
+    if (!repo) return;
+    writeStoredBlocks(cli, repo.path, blocks);
+    writeStoredSeq(cli, repo.path, lastSeqRef.current);
+  }, [blocks, repo?.path, cli]);
+
   useEffect(() => {
     if (!enabled || !repo) return;
 
     teardownRef.current = false;
-    setBlocks([]);
+    // Restore prior blocks from localStorage so a page reload doesn't wipe
+    // the chat. Server replay then fills in events newer than what we have.
+    const stored = readStoredBlocks(cli, repo.path);
+    setBlocks(stored);
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
-    // Use 0 so the server replays its entire buffer on first connect — that's
-    // how we get back the in-flight turn after a phone lock or page reload.
-    // For a brand-new session the buffer is empty, so this is a no-op.
-    lastSeqRef.current = 0;
+    // Sequence we've already seen (persisted) — replay only what's newer.
+    lastSeqRef.current = readStoredSeq(cli, repo.path);
 
     const connect = () => {
       if (teardownRef.current) return;
@@ -255,7 +306,11 @@ export function useChat(opts: {
           setError(null);
           setStatus('ready');
           turnIdRef.current = '';
-          lastSeqRef.current = -1;
+          lastSeqRef.current = 0;
+          if (repo) {
+            writeStoredBlocks(cli, repo.path, []);
+            writeStoredSeq(cli, repo.path, 0);
+          }
         }
         else if (msg.type === 'sessionClosed') {
           setError('Sam closed the session — say something to wake him.');
@@ -311,7 +366,10 @@ export function useChat(opts: {
     };
   }, [enabled, repo?.path, cli]);
 
-  const send = (text: string) => {
+  const send = (
+    text: string,
+    images?: Array<{ mediaType: string; base64: string }>,
+  ) => {
     const ws = wsRef.current;
     setBlocks((prev) => [
       ...prev,
@@ -322,7 +380,7 @@ export function useChat(opts: {
       return;
     }
     setError(null);
-    ws.send(JSON.stringify({ type: 'send', text }));
+    ws.send(JSON.stringify({ type: 'send', text, images }));
   };
 
   const freshStart = () => {
@@ -335,5 +393,12 @@ export function useChat(opts: {
     ws.send(JSON.stringify({ type: 'freshStart', cli, repo: repo.path }));
   };
 
-  return { blocks, status, error, send, freshStart, usage };
+  const stop = () => {
+    if (!repo) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'stop', cli, repo: repo.path }));
+  };
+
+  return { blocks, status, error, send, freshStart, stop, usage };
 }

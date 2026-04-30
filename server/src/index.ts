@@ -11,6 +11,7 @@ import { ensureStateDir } from './sessions.ts';
 import {
   getOrCreateSession,
   freshStart,
+  interruptSession,
   shutdownAllSessions,
   activeClaudeSessions,
   type AnySession,
@@ -76,9 +77,14 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/api/ws' });
 
 type ClientHello = { type: 'hello'; cli: CliKind; repo: string; sinceSeq?: number };
-type ClientSend = { type: 'send'; text: string };
+type ClientSend = {
+  type: 'send';
+  text: string;
+  images?: Array<{ mediaType: string; base64: string }>;
+};
 type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string };
-type ClientMsg = ClientHello | ClientSend | ClientFresh;
+type ClientStop = { type: 'stop'; cli: CliKind; repo: string };
+type ClientMsg = ClientHello | ClientSend | ClientFresh | ClientStop;
 
 let wsCounter = 0;
 
@@ -139,6 +145,23 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'stop') {
+      console.log(`[ws#${wsId}] stop cli=${msg.cli} repo=${msg.repo}`);
+      try {
+        await interruptSession({ cli: msg.cli, repoPath: msg.repo });
+        busy = false;
+        safeSend({ type: 'turnEnd' });
+        // Drop the cached session promise; next send will re-spawn (resuming
+        // from the saved session_id, so the conversation continues).
+        sessionPromise = null;
+        unsubscribe?.();
+        unsubscribe = null;
+      } catch (e) {
+        safeSend({ type: 'error', message: String((e as Error).message) });
+      }
+      return;
+    }
+
     if (msg.type === 'freshStart') {
       try {
         unsubscribe?.();
@@ -167,22 +190,42 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'send') {
-      console.log(`[ws#${wsId}] send cli=${cliKind} bytes=${msg.text.length}`);
+      const imageCount = msg.images?.length ?? 0;
+      console.log(`[ws#${wsId}] send cli=${cliKind} bytes=${msg.text.length} images=${imageCount}`);
       if (!sessionPromise) {
         console.warn(`[ws#${wsId}] send rejected: no session`);
         safeSend({ type: 'error', message: 'no session — send hello first' });
         return;
       }
-      if (busy) {
-        console.warn(`[ws#${wsId}] send rejected: busy`);
-        safeSend({ type: 'error', message: 'sam is still answering — wait or interrupt' });
+      // Codex is spawn-per-turn, so block mid-turn sends (would orphan the
+      // running process). Claude/assistant are persistent stdin and accept
+      // steer messages, so we let them through even while a turn is in flight.
+      if (busy && cliKind === 'codex') {
+        console.warn(`[ws#${wsId}] send rejected: codex busy`);
+        safeSend({ type: 'error', message: 'codex is on a turn — wait for the result' });
         return;
       }
-      busy = true;
-      safeSend({ type: 'turnStart' });
+      if (!busy) {
+        busy = true;
+        safeSend({ type: 'turnStart' });
+      }
       try {
         const session = await sessionPromise;
-        session.send(msg.text);
+        // Codex doesn't accept images via stdin (no streaming input mode).
+        if (cliKind === 'codex' && imageCount > 0) {
+          safeSend({ type: 'error', message: 'codex companion does not accept images yet' });
+          busy = false;
+          safeSend({ type: 'turnEnd' });
+          return;
+        }
+        if ('send' in session) {
+          // Claude path supports images; codex path takes text only.
+          if (cliKind === 'codex') {
+            (session as any).send(msg.text);
+          } else {
+            (session as any).send(msg.text, msg.images);
+          }
+        }
       } catch (e) {
         console.error(`[ws#${wsId}] send failed:`, (e as Error).message);
         busy = false;
