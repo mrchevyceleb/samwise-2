@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { SamPortrait } from './atoms';
+import type { CommandEntry } from '../../data/types';
+import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
 // ─────────────────────────────────────────────
 // Sam's message bubble — vellum, left-aligned, with avatar
@@ -375,6 +377,9 @@ export function ChatInput({
   onChange,
   onSend,
   onSteer,
+  onBack,
+  commands = [],
+  commandPrefix = '/',
   busy = false,
   placeholder = 'Speak, master.',
   agent = 'Claude Code',
@@ -385,6 +390,9 @@ export function ChatInput({
   onChange?: (v: string) => void;
   onSend?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onSteer?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
+  onBack?: () => void;
+  commands?: CommandEntry[];
+  commandPrefix?: string;
   busy?: boolean;
   placeholder?: string;
   agent?: string;
@@ -397,6 +405,7 @@ export function ChatInput({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [images, setImages] = useState<ChatImage[]>([]);
+  const suggestion = getCommandSuggestion(v, commandPrefix, commands);
 
   // Auto-grow with content. The browser sets scrollHeight to whatever the
   // content needs; reset to auto first so it can shrink too. Capped via
@@ -428,6 +437,21 @@ export function ChatInput({
       return [];
     });
     if (!isControlled) setInternal('');
+  };
+
+  const acceptSuggestion = () => {
+    if (!suggestion) return;
+    setV(suggestion.fullText);
+    requestAnimationFrame(() => {
+      taRef.current?.focus();
+      taRef.current?.setSelectionRange(suggestion.fullText.length, suggestion.fullText.length);
+    });
+  };
+
+  const sendCommand = (name: string) => {
+    const text = commandText(commandPrefix, name);
+    if (busy && onSteer) onSteer(text);
+    else onSend?.(text);
   };
 
   const ingestFiles = async (files: FileList | File[]) => {
@@ -520,6 +544,23 @@ export function ChatInput({
         >
           ⌘K to switch
         </span>
+        {onBack && (
+          <button
+            className="sw-btn"
+            onClick={onBack}
+            style={{
+              fontSize: 13,
+              padding: '6px 12px',
+              minHeight: 0,
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              color: 'var(--ember)',
+              flexShrink: 0,
+            }}
+          >
+            threshold
+          </button>
+        )}
       </div>
       {images.length > 0 && (
         <div
@@ -572,48 +613,96 @@ export function ChatInput({
           ))}
         </div>
       )}
-      <textarea
-        ref={taRef}
-        value={v}
-        onChange={(e) => setV(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            submit();
-          }
-        }}
-        onPaste={(e) => {
-          if (!acceptImages) return;
-          const files: File[] = [];
-          for (const item of Array.from(e.clipboardData.items)) {
-            if (item.kind === 'file' && item.type.startsWith('image/')) {
-              const f = item.getAsFile();
-              if (f) files.push(f);
+      <div style={{ position: 'relative' }}>
+        {suggestion && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              fontFamily: 'var(--serif-body)',
+              fontSize: 19,
+              lineHeight: 1.55,
+              fontStyle: v ? 'normal' : 'italic',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              color: 'transparent',
+              minHeight: 64,
+              overflow: 'hidden',
+            }}
+          >
+            <span>{v}</span>
+            <span style={{ color: 'var(--ink-faint)' }}>{suggestion.tail}</span>
+          </div>
+        )}
+        <textarea
+          ref={taRef}
+          value={v}
+          onChange={(e) => setV(e.target.value)}
+          onKeyDown={(e) => {
+            if (suggestion && (e.key === 'Tab' || e.key === 'ArrowRight')) {
+              e.preventDefault();
+              acceptSuggestion();
+              return;
             }
-          }
-          if (files.length) {
-            e.preventDefault();
-            void ingestFiles(files);
-          }
-        }}
-        placeholder={placeholder}
-        rows={2}
-        style={{
-          width: '100%',
-          resize: 'none',
-          border: 0,
-          outline: 'none',
-          background: 'transparent',
-          fontFamily: 'var(--serif-body)',
-          fontSize: 19,
-          lineHeight: 1.55,
-          color: 'var(--ink)',
-          fontStyle: v ? 'normal' : 'italic',
-          minHeight: 64,
-          maxHeight: '40dvh',
-          overflowY: 'auto',
-        }}
-      />
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          onPaste={(e) => {
+            if (!acceptImages) return;
+            const files: File[] = [];
+            for (const item of Array.from(e.clipboardData.items)) {
+              if (item.kind === 'file' && item.type.startsWith('image/')) {
+                const f = item.getAsFile();
+                if (f) files.push(f);
+              }
+            }
+            if (files.length) {
+              e.preventDefault();
+              void ingestFiles(files);
+            }
+          }}
+          placeholder={placeholder}
+          rows={2}
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            width: '100%',
+            resize: 'none',
+            border: 0,
+            outline: 'none',
+            background: 'transparent',
+            fontFamily: 'var(--serif-body)',
+            fontSize: 19,
+            lineHeight: 1.55,
+            color: 'var(--ink)',
+            fontStyle: v ? 'normal' : 'italic',
+            minHeight: 64,
+            maxHeight: '40dvh',
+            overflowY: 'auto',
+          }}
+        />
+      </div>
+      {suggestion && (
+        <button
+          className="sw-btn"
+          onClick={acceptSuggestion}
+          style={{
+            marginTop: 6,
+            fontSize: 12.5,
+            padding: '5px 10px',
+            minHeight: 0,
+            fontFamily: 'var(--serif-display)',
+            fontStyle: 'italic',
+            color: 'var(--ink-soft)',
+          }}
+        >
+          {commandText(commandPrefix, suggestion.command.name)}
+        </button>
+      )}
       <input
         type="file"
         ref={fileInputRef}
@@ -629,6 +718,22 @@ export function ChatInput({
         <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
           ↵ to send · ⇧↵ for new line
         </span>
+        <button
+          className="sw-btn"
+          style={{ fontSize: 13, padding: '7px 12px' }}
+          onClick={() => sendCommand('match')}
+          title={`send ${commandText(commandPrefix, 'match')}`}
+        >
+          {commandText(commandPrefix, 'match')}
+        </button>
+        <button
+          className="sw-btn"
+          style={{ fontSize: 13, padding: '7px 12px' }}
+          onClick={() => sendCommand('push')}
+          title={`send ${commandText(commandPrefix, 'push')}`}
+        >
+          {commandText(commandPrefix, 'push')}
+        </button>
         <span style={{ marginLeft: 'auto' }}></span>
         {acceptImages && (
           <button

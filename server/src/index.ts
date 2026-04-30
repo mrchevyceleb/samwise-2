@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import { PORT } from './config.ts';
 import { discoverRepos } from './repos.ts';
 import { readChronicle } from './chronicle.ts';
+import { readCommands } from './commands.ts';
 import { ensureStateDir } from './sessions.ts';
 import {
   getOrCreateSession,
@@ -67,6 +68,15 @@ app.get('/api/chronicle', async (_req, res) => {
   try {
     const events = await readChronicle();
     res.json({ events });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.get('/api/commands', async (_req, res) => {
+  try {
+    const commands = await readCommands();
+    res.json(commands);
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }

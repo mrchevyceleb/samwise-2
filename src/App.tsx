@@ -12,6 +12,7 @@ import { useIsMobile } from './hooks/useMediaQuery';
 import { useRepos } from './hooks/useRepos';
 import { useChat } from './hooks/useChat';
 import { useChronicle } from './hooks/useChronicle';
+import { useCommands } from './hooks/useCommands';
 import { useLive } from './hooks/useLive';
 import { useTheme } from './hooks/useTheme';
 
@@ -58,6 +59,7 @@ export default function App() {
 
   const [chronicleTick, setChronicleTick] = useState(0);
   const chronicle = useChronicle(chronicleTick);
+  const commands = useCommands();
   const liveSessions = useLive();
 
   // Restore the last active conversation if there was one. We start in the
@@ -140,6 +142,8 @@ export default function App() {
   const repoLabel = repo
     ? `${repo.name}${repo.branch ? ` · ${repo.branch}` : ''}`
     : 'just chatting';
+  const commandPrefix = companion === 'codex' ? '$' : '/';
+  const activeCommands = companion === 'codex' ? commands.codex : commands.claude;
 
   const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
 
@@ -168,6 +172,8 @@ export default function App() {
             status={chat.status}
             errorText={chat.error}
             usage={chat.usage}
+            commands={activeCommands}
+            commandPrefix={commandPrefix}
             onBack={goToThreshold}
             onOpenChronicle={() => setChronicleOpen(true)}
             onSend={chat.send}
@@ -240,6 +246,8 @@ export default function App() {
             status={chat.status}
             errorText={chat.error}
             usage={chat.usage}
+            commands={activeCommands}
+            commandPrefix={commandPrefix}
             onSend={chat.send}
             onSteer={chat.steer}
             onBack={goToThreshold}

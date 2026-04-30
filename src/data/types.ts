@@ -26,6 +26,17 @@ export type Repo = {
   italic?: boolean;
 };
 
+export type CommandEntry = {
+  name: string;
+  title?: string;
+  description?: string;
+};
+
+export type CommandCatalog = {
+  claude: CommandEntry[];
+  codex: CommandEntry[];
+};
+
 // Re-export for places that use it — kept here since it's a UI-facing type.
 
 // Conversation block — the renderable unit in the chat thread.

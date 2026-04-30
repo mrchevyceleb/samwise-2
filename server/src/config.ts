@@ -31,6 +31,18 @@ export const ASSISTANT_HUB_PATH = join(
   'ASSISTANT-HUB',
 );
 
+export const CROSS_COMPUTER_SHARE_PATH = join(
+  homedir(),
+  'Library',
+  'CloudStorage',
+  'OneDrive-Personal',
+  'Documents',
+  'CROSS-COMPUTER-SHARE',
+);
+
+export const CLAUDE_COMMANDS_DIR = join(CROSS_COMPUTER_SHARE_PATH, 'claude-commands');
+export const CODEX_SKILLS_DIR = join(CROSS_COMPUTER_SHARE_PATH, 'skills');
+
 // Where Claude Code persists its session JSONL files.
 export const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 

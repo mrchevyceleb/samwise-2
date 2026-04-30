@@ -7,7 +7,7 @@ import {
   ChatInput,
 } from '../primitives/chat';
 import { Markdown } from '../primitives/Markdown';
-import type { ChatBlock } from '../../data/types';
+import type { ChatBlock, CommandEntry } from '../../data/types';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
 
@@ -19,6 +19,8 @@ type ConversationProps = {
   status: Status;
   errorText?: string | null;
   usage?: { inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; fraction: number; windowTokens: number } | null;
+  commands?: CommandEntry[];
+  commandPrefix?: string;
   onSend?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onSteer?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onBack?: () => void;
@@ -53,6 +55,8 @@ export function Conversation({
   status,
   errorText,
   usage,
+  commands = [],
+  commandPrefix = '/',
   onSend,
   onSteer,
   onBack,
@@ -272,36 +276,15 @@ export function Conversation({
         }}
       >
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 48px' }}>
-          {onBack && (
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                marginBottom: 8,
-              }}
-            >
-              <button
-                onClick={onBack}
-                className="sw-btn"
-                style={{
-                  fontSize: 12.5,
-                  padding: '4px 12px',
-                  minHeight: 0,
-                  fontFamily: 'var(--serif-display)',
-                  fontStyle: 'italic',
-                  color: 'var(--ember)',
-                }}
-              >
-                the threshold
-              </button>
-            </div>
-          )}
           <ChatInput
             agent={agent}
             repo={repo}
             placeholder="speak, master…"
             onSend={onSend}
             onSteer={onSteer}
+            onBack={onBack}
+            commands={commands}
+            commandPrefix={commandPrefix}
             busy={status === 'streaming'}
             acceptImages={acceptImages}
           />

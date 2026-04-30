@@ -6,6 +6,7 @@ import {
   ToolCall,
 } from '../primitives/chat';
 import { Markdown } from '../primitives/Markdown';
+import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
 function timeLabel(ts: number): string {
   const d = new Date(ts);
@@ -16,43 +17,112 @@ function MobileGrowingInput({
   value,
   onChange,
   onSubmit,
-}: { value: string; onChange: (v: string) => void; onSubmit: () => void }) {
+  commandPrefix,
+  commands,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  commandPrefix: string;
+  commands: CommandEntry[];
+}) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const suggestion = getCommandSuggestion(value, commandPrefix, commands);
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   }, [value]);
+
+  const acceptSuggestion = () => {
+    if (!suggestion) return;
+    onChange(suggestion.fullText);
+    requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(suggestion.fullText.length, suggestion.fullText.length);
+    });
+  };
+
   return (
-    <textarea
-      ref={ref}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          onSubmit();
-        }
-      }}
-      placeholder="speak, master…"
-      rows={1}
-      style={{
-        flex: 1,
-        border: 0,
-        outline: 'none',
-        background: 'transparent',
-        fontFamily: 'var(--serif-body)',
-        fontStyle: value ? 'normal' : 'italic',
-        color: value ? 'var(--ink)' : 'var(--ink-faint)',
-        fontSize: 19,
-        resize: 'none',
-        maxHeight: '35dvh',
-        overflowY: 'auto',
-        lineHeight: 1.45,
-        minWidth: 0,
-      }}
-    />
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ position: 'relative' }}>
+        {suggestion && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              inset: 0,
+              pointerEvents: 'none',
+              fontFamily: 'var(--serif-body)',
+              fontStyle: value ? 'normal' : 'italic',
+              color: 'transparent',
+              fontSize: 19,
+              lineHeight: 1.45,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              overflow: 'hidden',
+            }}
+          >
+            <span>{value}</span>
+            <span style={{ color: 'var(--ink-faint)' }}>{suggestion.tail}</span>
+          </div>
+        )}
+        <textarea
+          ref={ref}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (suggestion && (e.key === 'Tab' || e.key === 'ArrowRight')) {
+              e.preventDefault();
+              acceptSuggestion();
+              return;
+            }
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          placeholder="speak, master..."
+          rows={1}
+          style={{
+            position: 'relative',
+            zIndex: 1,
+            width: '100%',
+            border: 0,
+            outline: 'none',
+            background: 'transparent',
+            fontFamily: 'var(--serif-body)',
+            fontStyle: value ? 'normal' : 'italic',
+            color: value ? 'var(--ink)' : 'var(--ink-faint)',
+            fontSize: 19,
+            resize: 'none',
+            maxHeight: '35dvh',
+            overflowY: 'auto',
+            lineHeight: 1.45,
+            minWidth: 0,
+            padding: 0,
+          }}
+        />
+      </div>
+      {suggestion && (
+        <button
+          onClick={acceptSuggestion}
+          style={{
+            marginTop: 4,
+            border: 0,
+            background: 'transparent',
+            color: 'var(--ink-soft)',
+            fontFamily: 'var(--serif-display)',
+            fontStyle: 'italic',
+            fontSize: 12,
+            padding: 0,
+          }}
+        >
+          {commandText(commandPrefix, suggestion.command.name)}
+        </button>
+      )}
+    </div>
   );
 }
 import {
@@ -68,7 +138,7 @@ import {
   type ChronicleEvent,
   type ChronicleEventKind,
 } from '../../data/mock';
-import type { LiveSession } from '../../data/types';
+import type { CommandEntry, LiveSession } from '../../data/types';
 
 const COMPANION_LABEL: Record<CompanionId, string> = {
   claude: 'claude',
@@ -519,6 +589,8 @@ export function MobileConversation({
   status,
   errorText,
   usage,
+  commands = [],
+  commandPrefix = '/',
   onBack,
   onOpenChronicle,
   onSend,
@@ -534,6 +606,8 @@ export function MobileConversation({
   status: 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
   errorText?: string | null;
   usage?: { fraction: number; inputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; windowTokens: number } | null;
+  commands?: CommandEntry[];
+  commandPrefix?: string;
   onBack: () => void;
   onOpenChronicle: () => void;
   onSend?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
@@ -611,6 +685,12 @@ export function MobileConversation({
     for (const i of pendingImages) URL.revokeObjectURL(i.previewUrl);
     setPendingImages([]);
     setDraft('');
+  };
+
+  const sendCommand = (name: string) => {
+    const text = commandText(commandPrefix, name);
+    if (status === 'streaming' && onSteer) onSteer(text);
+    else onSend?.(text);
   };
 
   const statusLabel: Record<typeof status, string> = {
@@ -924,10 +1004,31 @@ export function MobileConversation({
             }
           }}
         >
+          <button
+            onClick={onBack}
+            aria-label="go to errands"
+            style={{
+              height: 48,
+              padding: '0 12px',
+              borderRadius: 8,
+              border: '1px solid var(--rule-soft)',
+              background: 'var(--parchment-2)',
+              color: 'var(--ember)',
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 14,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            errands
+          </button>
           <MobileGrowingInput
             value={draft}
             onChange={setDraft}
             onSubmit={submit}
+            commandPrefix={commandPrefix}
+            commands={commands}
           />
           {acceptImages && (
             <button
@@ -989,6 +1090,43 @@ export function MobileConversation({
               </button>
             );
           })()}
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            gap: 8,
+            marginTop: 8,
+            padding: '0 4px',
+          }}
+        >
+          <button
+            onClick={() => sendCommand('match')}
+            style={{
+              border: '1px solid var(--rule-soft)',
+              background: 'var(--vellum)',
+              color: 'var(--ink-soft)',
+              borderRadius: 8,
+              padding: '7px 11px',
+              fontFamily: 'var(--mono)',
+              fontSize: 12,
+            }}
+          >
+            {commandText(commandPrefix, 'match')}
+          </button>
+          <button
+            onClick={() => sendCommand('push')}
+            style={{
+              border: '1px solid var(--rule-soft)',
+              background: 'var(--vellum)',
+              color: 'var(--ink-soft)',
+              borderRadius: 8,
+              padding: '7px 11px',
+              fontFamily: 'var(--mono)',
+              fontSize: 12,
+            }}
+          >
+            {commandText(commandPrefix, 'push')}
+          </button>
         </div>
         <input
           type="file"
