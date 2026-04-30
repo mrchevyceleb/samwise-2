@@ -180,7 +180,7 @@ export default function App() {
             onSteer={chat.steer}
             onFreshStart={chat.freshStart}
             onStop={chat.stop}
-            acceptImages={companion !== 'codex'}
+            acceptImages={true}
           />
         )}
         <MobileChronicleSheet
@@ -253,7 +253,7 @@ export default function App() {
             onBack={goToThreshold}
             onFreshStart={chat.freshStart}
             onStop={chat.stop}
-            acceptImages={companion !== 'codex'}
+            acceptImages={true}
           />
         )}
       </main>

@@ -256,14 +256,8 @@ wss.on('connection', (ws, req) => {
         );
         busy = true;
         safeSend({ type: 'turnStart' });
-        if (msg.cli === 'codex' && (msg.images?.length ?? 0) > 0) {
-          safeSend({ type: 'error', message: 'codex companion does not accept images yet' });
-          busy = false;
-          safeSend({ type: 'turnEnd' });
-          return;
-        }
         if ('send' in session) {
-          if (msg.cli === 'codex') (session as any).send(msg.text);
+          if (msg.cli === 'codex') await (session as any).send(msg.text, msg.images);
           else {
             (session as any).send(msg.text, msg.images);
             void retryOnceAfterStaleResume(session, msg.text, turnGeneration, msg.images);
@@ -346,17 +340,10 @@ wss.on('connection', (ws, req) => {
       }
       try {
         const session = await sessionPromise;
-        // Codex doesn't accept images via stdin (no streaming input mode).
-        if (cliKind === 'codex' && imageCount > 0) {
-          safeSend({ type: 'error', message: 'codex companion does not accept images yet' });
-          busy = false;
-          safeSend({ type: 'turnEnd' });
-          return;
-        }
         if ('send' in session) {
-          // Claude path supports images; codex path takes text only.
+          // Claude reads images from stdin; Codex gets temp files passed with --image.
           if (cliKind === 'codex') {
-            (session as any).send(msg.text);
+            await (session as any).send(msg.text, msg.images);
           } else {
             (session as any).send(msg.text, msg.images);
             void retryOnceAfterStaleResume(session, msg.text, turnGeneration, msg.images);

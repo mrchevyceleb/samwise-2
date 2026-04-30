@@ -621,7 +621,9 @@ export function MobileConversation({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef(true);
+  const [composerHeight, setComposerHeight] = useState(132);
 
   useEffect(() => {
     if (!stickyRef.current) return;
@@ -634,6 +636,20 @@ export function MobileConversation({
     const id = requestAnimationFrame(pin);
     return () => cancelAnimationFrame(id);
   }, [blocks, status]);
+
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    const update = () => setComposerHeight(Math.ceil(el.getBoundingClientRect().height));
+    update();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', update);
+      return () => window.removeEventListener('resize', update);
+    }
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -919,6 +935,7 @@ export function MobileConversation({
 
       {/* Composer */}
       <div
+        ref={composerRef}
         style={{
           padding: '12px 14px 10px',
           borderTop: '1px solid var(--rule-soft)',
@@ -1030,26 +1047,6 @@ export function MobileConversation({
             commandPrefix={commandPrefix}
             commands={commands}
           />
-          {acceptImages && (
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              aria-label="attach image"
-              style={{
-                width: 48,
-                height: 48,
-                borderRadius: '50%',
-                border: '1px solid var(--rule-soft)',
-                background: 'transparent',
-                color: 'var(--ink-soft)',
-                fontSize: 16,
-                cursor: 'pointer',
-                flexShrink: 0,
-                padding: 0,
-              }}
-            >
-              📎
-            </button>
-          )}
           {(() => {
             const hasText = draft.trim().length > 0 || pendingImages.length > 0;
             const streaming = status === 'streaming';
@@ -1097,8 +1094,27 @@ export function MobileConversation({
             gap: 8,
             marginTop: 8,
             padding: '0 4px',
+            flexWrap: 'wrap',
           }}
         >
+          {acceptImages && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              aria-label="attach image"
+              style={{
+                border: '1px solid var(--rule-soft)',
+                background: 'var(--vellum)',
+                color: 'var(--ink-soft)',
+                borderRadius: 8,
+                padding: '7px 11px',
+                fontFamily: 'var(--serif-display)',
+                fontStyle: 'italic',
+                fontSize: 13,
+              }}
+            >
+              📎 image
+            </button>
+          )}
           <button
             onClick={() => sendCommand('match')}
             style={{
@@ -1148,7 +1164,7 @@ export function MobileConversation({
         style={{
           position: 'absolute',
           right: 16,
-          bottom: 92,
+          bottom: composerHeight + 16,
           width: 60,
           height: 60,
           borderRadius: '50%',

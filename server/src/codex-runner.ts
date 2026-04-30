@@ -1,4 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
 
@@ -15,6 +18,16 @@ export type Listener = (e: SeqEvent) => void;
 
 let nextSyntheticId = 1;
 const synth = (prefix: string) => `${prefix}_${nextSyntheticId++}`;
+type ChatImage = { mediaType: string; base64: string };
+
+const imageExtension = (mediaType: string): string => {
+  if (mediaType === 'image/jpeg') return 'jpg';
+  if (mediaType === 'image/png') return 'png';
+  if (mediaType === 'image/gif') return 'gif';
+  if (mediaType === 'image/webp') return 'webp';
+  const subtype = mediaType.split('/')[1]?.split('+')[0] ?? 'img';
+  return subtype.replace(/[^a-z0-9]/gi, '') || 'img';
+};
 
 export class CodexSession {
   readonly key: string;
@@ -89,7 +102,7 @@ export class CodexSession {
     }
   }
 
-  send(text: string): void {
+  async send(text: string, images?: ChatImage[]): Promise<void> {
     if (this.busy) {
       this.emit({
         type: 'error',
@@ -99,13 +112,54 @@ export class CodexSession {
     }
     this.busy = true;
     // Echo for reconnect replay (codex's events don't re-emit the user prompt).
-    this.emit({ type: 'event', event: { type: '_user_echo', text, ts: Date.now() } });
+    this.emit({
+      type: 'event',
+      event: { type: '_user_echo', text, imageCount: images?.length ?? 0, ts: Date.now() },
+    });
 
-    const args: string[] = ['exec', '--json', '--dangerously-bypass-approvals-and-sandbox'];
-    if (this.threadId) {
-      args.splice(1, 0, 'resume', this.threadId);
+    let imageTempDir: string | null = null;
+    const cleanupImages = () => {
+      if (imageTempDir) void rm(imageTempDir, { recursive: true, force: true });
+    };
+
+    const imageArgs: string[] = [];
+    try {
+      if (images?.length) {
+        imageTempDir = await mkdtemp(join(tmpdir(), 'samwise-codex-images-'));
+        for (const [index, image] of images.entries()) {
+          if (!image.mediaType.startsWith('image/')) {
+            throw new Error(`unsupported image media type: ${image.mediaType}`);
+          }
+          const path = join(imageTempDir, `image-${index + 1}.${imageExtension(image.mediaType)}`);
+          await writeFile(path, Buffer.from(image.base64, 'base64'));
+          imageArgs.push('--image', path);
+        }
+      }
+    } catch (e) {
+      cleanupImages();
+      this.busy = false;
+      this.emit({ type: 'error', message: `image preparation failed: ${(e as Error).message}` });
+      this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
+      return;
     }
-    args.push(text);
+
+    const args: string[] = this.threadId
+      ? [
+          'exec',
+          'resume',
+          '--json',
+          '--dangerously-bypass-approvals-and-sandbox',
+          ...imageArgs,
+          this.threadId,
+          text,
+        ]
+      : [
+          'exec',
+          '--json',
+          '--dangerously-bypass-approvals-and-sandbox',
+          ...imageArgs,
+          text,
+        ];
 
     const child = spawn('codex', args, {
       cwd: this.cwd,
@@ -157,6 +211,7 @@ export class CodexSession {
     child.on('exit', async (code) => {
       this.busy = false;
       this.currentChild = null;
+      cleanupImages();
       // Emit a result event so the front-end flips status back to 'ready'.
       this.emitClaudeEvent({
         type: 'result',
@@ -173,7 +228,9 @@ export class CodexSession {
     child.on('error', (err) => {
       this.busy = false;
       this.currentChild = null;
+      cleanupImages();
       this.emit({ type: 'error', message: `codex spawn failed: ${err.message}` });
+      this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
     });
   }
 
