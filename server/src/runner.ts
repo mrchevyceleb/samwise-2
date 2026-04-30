@@ -49,6 +49,7 @@ class ClaudeSession {
   private child: ChildProcessByStdio<Writable, Readable, Readable>;
   private stdoutBuf = '';
   private listeners = new Set<(e: SeqEvent) => void>();
+  private subscriberCount = 0;
   /** Rolling tail of recent events (with sequence numbers) for reconnect replay. */
   private eventLog: SeqEvent[] = [];
   private nextSeq = 1;
@@ -129,15 +130,23 @@ class ClaudeSession {
    * any buffered events with seq > sinceSeq before returning. Pass 0 for
    * "give me everything in the buffer."
    */
-  subscribe(fn: (e: SeqEvent) => void, sinceSeq = -1): () => void {
+  subscribe(fn: (e: SeqEvent) => void, sinceSeq = -1, countSubscriber = true): () => void {
     if (sinceSeq >= 0) {
       for (const se of this.eventLog) {
         if (se.seq > sinceSeq) fn(se);
       }
     }
     this.listeners.add(fn);
+    if (countSubscriber) this.subscriberCount += 1;
+    let subscribed = true;
     return () => {
+      if (!subscribed) return;
+      subscribed = false;
       this.listeners.delete(fn);
+      if (countSubscriber) {
+        this.subscriberCount = Math.max(0, this.subscriberCount - 1);
+        if (this.subscriberCount === 0) this.lastActivityAtMs = Date.now();
+      }
     };
   }
 
@@ -220,6 +229,10 @@ class ClaudeSession {
   /** True while this session is actively processing a turn (between user send and result event). */
   isBusy(): boolean {
     return this.turnStartedAt !== null;
+  }
+
+  listenerCount(): number {
+    return this.subscriberCount;
   }
 
   /** Most recent activity timestamp (ms). */
@@ -330,11 +343,11 @@ async function spawnSession(
   const session = new ClaudeSession(cli, cwd, resumeId);
   sessions.set(key, session);
 
-  session.subscribe((msg) => {
-    if (msg.type === 'closed' && sessions.get(key) === session) {
+  session.subscribe((se) => {
+    if (se.ev.type === 'closed' && sessions.get(key) === session) {
       sessions.delete(key);
     }
-  });
+  }, -1, false);
 
   const ok = await session.ready;
   if (!ok) {
@@ -380,6 +393,19 @@ export function activeClaudeSessions(): LiveSession[] {
     });
   }
   return out;
+}
+
+export function pruneIdleClaudeSessions(ttlMs: number, now = Date.now()): number {
+  let pruned = 0;
+  for (const [key, session] of sessions) {
+    if (session.isBusy()) continue;
+    if (session.listenerCount() > 0) continue;
+    if (now - session.lastActivityAt() < ttlMs) continue;
+    session.shutdown();
+    sessions.delete(key);
+    pruned += 1;
+  }
+  return pruned;
 }
 
 // Drop the warm process AND the stored session id so the next spawn starts a

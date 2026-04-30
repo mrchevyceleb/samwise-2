@@ -14,14 +14,21 @@ import {
   interruptSession,
   shutdownAllSessions,
   activeClaudeSessions,
+  pruneIdleClaudeSessions,
   type AnySession,
   type CliKind,
 } from './runner.ts';
-import { shutdownAllCodexSessions, activeCodexSessions } from './codex-runner.ts';
+import {
+  shutdownAllCodexSessions,
+  activeCodexSessions,
+  pruneIdleCodexSessions,
+} from './codex-runner.ts';
 import { basename } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = resolve(HERE, '..', '..', 'dist');
+const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
+const IDLE_REAPER_INTERVAL_MS = 60 * 1000;
 
 await ensureStateDir();
 
@@ -123,11 +130,19 @@ wss.on('connection', (ws, req) => {
       safeSend({ type: 'error', message: sev.message, seq: se.seq });
     } else if (sev.type === 'closed') {
       safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq });
+      // The CLI process is dead. Drop the stale promise + subscription so the
+      // next `send` hits the recovery branch and rebinds via getOrCreateSession
+      // (which spawns a fresh process resuming from the saved session_id).
+      // Without this the client is stuck emitting "session has exited" until
+      // they hit Clear.
+      sessionPromise = null;
+      busy = false;
+      unsubscribe?.();
+      unsubscribe = null;
     }
   };
 
-  // Bind to a freshly created session — used after stop so the next send has
-  // somewhere to land.
+  // Bind to a session and subscribe this WebSocket to its event stream.
   const bindSession = async (
     promise: Promise<AnySession>,
     sinceSeq: number = -1,
@@ -158,8 +173,19 @@ wss.on('connection', (ws, req) => {
           getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
           sinceSeq,
         );
-        console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()}`);
-        safeSend({ type: 'ready', cli: msg.cli, repo: msg.repo, latestSeq: session.latestSeq() });
+        // If we're attaching to a session that's mid-turn, tell the client so
+        // its status flips to 'streaming' instead of stale 'ready'. Otherwise
+        // a phone unlock during a long Sam turn looks like nothing's happening.
+        const sessionBusy = (session as any).isBusy?.() === true;
+        if (sessionBusy) busy = true;
+        console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()} busy=${sessionBusy}`);
+        safeSend({
+          type: 'ready',
+          cli: msg.cli,
+          repo: msg.repo,
+          latestSeq: session.latestSeq(),
+          busy: sessionBusy,
+        });
       } catch (e) {
         console.error(`[ws#${wsId}] hello failed:`, (e as Error).message);
         sessionPromise = null;
@@ -205,14 +231,11 @@ wss.on('connection', (ws, req) => {
         await interruptSession({ cli: msg.cli, repoPath: msg.repo });
         busy = false;
         safeSend({ type: 'turnEnd' });
-        // Re-bind to a fresh session so the next send has somewhere to land
-        // (the manager kills the old process, getOrCreateSession spawns a
-        // new one resuming from the saved session_id). Without this, the
-        // next send hits "no session — send hello first" and the user is
-        // stuck.
         cliKind = msg.cli;
         repoPath = msg.repo;
-        await bindSession(getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }));
+        sessionPromise = null;
+        unsubscribe?.();
+        unsubscribe = null;
       } catch (e) {
         safeSend({ type: 'error', message: String((e as Error).message) });
       }
@@ -307,7 +330,16 @@ server.listen(PORT, () => {
   console.log(`samwise-2 server listening on :${PORT}`);
 });
 
+const idleReaper = setInterval(() => {
+  const now = Date.now();
+  const pruned = pruneIdleClaudeSessions(IDLE_SESSION_TTL_MS, now)
+    + pruneIdleCodexSessions(IDLE_SESSION_TTL_MS, now);
+  if (pruned > 0) console.log(`[idle-reaper] pruned ${pruned} idle session(s)`);
+}, IDLE_REAPER_INTERVAL_MS);
+idleReaper.unref();
+
 const tearDown = () => {
+  clearInterval(idleReaper);
   shutdownAllSessions();
   shutdownAllCodexSessions();
   server.close(() => process.exit(0));

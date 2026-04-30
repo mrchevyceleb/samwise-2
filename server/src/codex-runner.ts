@@ -21,6 +21,7 @@ export class CodexSession {
   readonly cli: CliKind = 'codex';
   readonly cwd: string;
   private listeners = new Set<Listener>();
+  private subscriberCount = 0;
   private threadId: string | null = null;
   private busy = false;
   private dead = false;
@@ -37,14 +38,24 @@ export class CodexSession {
     this.threadId = threadId;
   }
 
-  subscribe(fn: Listener, sinceSeq = -1): () => void {
+  subscribe(fn: Listener, sinceSeq = -1, countSubscriber = true): () => void {
     if (sinceSeq >= 0) {
       for (const se of this.eventLog) {
         if (se.seq > sinceSeq) fn(se);
       }
     }
     this.listeners.add(fn);
-    return () => { this.listeners.delete(fn); };
+    if (countSubscriber) this.subscriberCount += 1;
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      this.listeners.delete(fn);
+      if (countSubscriber) {
+        this.subscriberCount = Math.max(0, this.subscriberCount - 1);
+        if (this.subscriberCount === 0) this.lastActivityAtMs = Date.now();
+      }
+    };
   }
 
   latestSeq(): number {
@@ -57,6 +68,10 @@ export class CodexSession {
 
   isBusy(): boolean {
     return this.busy;
+  }
+
+  listenerCount(): number {
+    return this.subscriberCount;
   }
 
   lastActivityAt(): number {
@@ -137,6 +152,7 @@ export class CodexSession {
 
     child.on('exit', async (code) => {
       this.busy = false;
+      this.currentChild = null;
       // Emit a result event so the front-end flips status back to 'ready'.
       this.emitClaudeEvent({
         type: 'result',
@@ -152,6 +168,7 @@ export class CodexSession {
 
     child.on('error', (err) => {
       this.busy = false;
+      this.currentChild = null;
       this.emit({ type: 'error', message: `codex spawn failed: ${err.message}` });
     });
   }
@@ -306,6 +323,19 @@ export function activeCodexSessions(): {
     busy: s.isBusy(),
     lastActivityAt: s.lastActivityAt(),
   }));
+}
+
+export function pruneIdleCodexSessions(ttlMs: number, now = Date.now()): number {
+  let pruned = 0;
+  for (const [key, session] of codexSessions) {
+    if (session.isBusy()) continue;
+    if (session.listenerCount() > 0) continue;
+    if (now - session.lastActivityAt() < ttlMs) continue;
+    session.shutdown();
+    codexSessions.delete(key);
+    pruned += 1;
+  }
+  return pruned;
 }
 
 export async function getOrCreateCodexSession(opts: { repoPath: string }): Promise<CodexSession> {
