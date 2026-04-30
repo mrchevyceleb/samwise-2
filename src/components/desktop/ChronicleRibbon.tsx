@@ -202,7 +202,7 @@ export function ChronicleRibbon({
                     borderRadius: '50%',
                     background: 'var(--vellum)',
                     border: `1.5px solid ${c}`,
-                    animation: e.running ? 'sw-pulse 1.4s infinite' : 'none',
+                    animation: e.busy ? 'sw-pulse 1.4s infinite' : 'none',
                   }}
                 />
                 {wide ? (
@@ -219,12 +219,28 @@ export function ChronicleRibbon({
                           asks
                         </span>
                       )}
-                      {e.running && (
+                      {e.busy && (
                         <span
                           className="sw-smallcaps"
                           style={{ fontSize: 10, color: 'var(--ember)' }}
                         >
                           now
+                        </span>
+                      )}
+                      {e.running && !e.busy && (
+                        <span
+                          className="sw-smallcaps"
+                          style={{ fontSize: 10, color: 'var(--gold)' }}
+                        >
+                          warm
+                        </span>
+                      )}
+                      {e.asleep && (
+                        <span
+                          className="sw-smallcaps"
+                          style={{ fontSize: 10, color: 'var(--ink-faint)' }}
+                        >
+                          asleep
                         </span>
                       )}
                     </div>

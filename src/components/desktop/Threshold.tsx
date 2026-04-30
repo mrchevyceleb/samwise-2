@@ -28,6 +28,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
   const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
   const [query, setQuery] = useState('');
+  const defaultRepo = regularRepos[0];
 
   const filteredRepos = (() => {
     const q = query.trim().toLowerCase();
@@ -40,17 +41,13 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
     );
   })();
 
-  // Default to the first discovered repo once they load.
-  if (selectedRepo === undefined && companion !== 'assistant' && regularRepos.length > 0) {
-    setSelectedRepo(regularRepos[0]);
-  }
-
   const pickCompanion = (id: CompanionId) => {
     setCompanion(id);
     if (id === 'assistant') setSelectedRepo(liveAssistantHub);
   };
 
-  const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo;
+  const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
+  const selectedRepoPath = effectiveRepo?.path;
 
   const setForth = (initialMessage?: string) => {
     onSetForth({ companion, repo: effectiveRepo, initialMessage });
@@ -288,7 +285,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
                         <RepoPick
                           key={r.path}
                           repo={r}
-                          selected={r.path === selectedRepo?.path}
+                          selected={r.path === selectedRepoPath}
                           onClick={() => setSelectedRepo(r)}
                         />
                       ))}
@@ -336,7 +333,10 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
           <button
             className="sw-btn sw-btn-primary"
             style={{ fontSize: 16, padding: '10px 24px' }}
-            onClick={() => setForth(query.trim() || undefined)}
+            onClick={() => {
+              setForth(query.trim() || undefined);
+              setQuery('');
+            }}
           >
             Set forth
           </button>

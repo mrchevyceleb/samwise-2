@@ -49,6 +49,8 @@ export type ChronicleEvent = {
   repo: string;
   kind: ChronicleEventKind;
   running?: boolean;
+  busy?: boolean;
+  asleep?: boolean;
   awaits?: boolean;
   done?: boolean;
   status?: string;

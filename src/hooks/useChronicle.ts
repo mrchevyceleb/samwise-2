@@ -8,7 +8,10 @@ type ServerEntry = {
   repoName: string;
   ts: number;
   running: boolean;
+  busy: boolean;
 };
+
+const CHRONICLE_POLL_MS = 15000;
 
 function timeLabel(ms: number): string {
   const d = new Date(ms);
@@ -30,10 +33,11 @@ function toEvent(e: ServerEntry): ChronicleEvent {
     t: timeLabel(e.ts),
     title: e.title,
     repo: e.repoName,
-    kind: e.running ? 'ember' : 'moss',
+    kind: e.busy ? 'ember' : e.running ? 'gold' : 'ink',
     running: e.running || undefined,
-    done: !e.running || undefined,
-    status: e.running ? 'tending now' : 'finished',
+    busy: e.busy || undefined,
+    asleep: !e.running || undefined,
+    status: e.busy ? 'tending now' : e.running ? 'warm, idle' : 'asleep',
   };
 }
 
@@ -48,8 +52,13 @@ export function useChronicle(refreshKey: number = 0): State & { reload: () => vo
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setTick((t) => t + 1), CHRONICLE_POLL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
-    setState((s) => ({ ...s, loading: true }));
+    setState((s) => ({ ...s, loading: s.events.length === 0 }));
     fetch('/api/chronicle')
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);

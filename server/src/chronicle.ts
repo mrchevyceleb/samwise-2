@@ -2,7 +2,7 @@ import { readdir, stat, open } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { CLAUDE_PROJECTS_DIR } from './config.ts';
-import { activeSessionKeys } from './runner.ts';
+import { activeClaudeSessions } from './runner.ts';
 import { discoverRepos } from './repos.ts';
 
 // One chronicle entry per Claude session JSONL file.
@@ -13,6 +13,7 @@ export type ChronicleEntry = {
   repoName: string;      // basename of cwd
   ts: number;            // file mtime in ms
   running: boolean;      // is this session currently spawned in our runner?
+  busy: boolean;         // is that spawned session currently mid-turn?
 };
 
 const MAX_ENTRIES = 25;
@@ -97,7 +98,11 @@ export async function readChronicle(): Promise<ChronicleEntry[]> {
   if (!existsSync(CLAUDE_PROJECTS_DIR)) return [];
   const projectDirs = await readdir(CLAUDE_PROJECTS_DIR, { withFileTypes: true });
   const cutoff = Date.now() - RECENT_DAYS * 24 * 60 * 60 * 1000;
-  const active = activeSessionKeys();
+  const activeById = new Map(
+    activeClaudeSessions()
+      .filter((s) => s.sessionId)
+      .map((s) => [s.sessionId as string, s]),
+  );
   const decode = await buildPathDecoder();
 
   const candidates: Array<{ entry: ChronicleEntry; path: string }> = [];
@@ -117,6 +122,7 @@ export async function readChronicle(): Promise<ChronicleEntry[]> {
       try { s = await stat(filePath); } catch { continue; }
       if (s.mtimeMs < cutoff) continue;
       const sessionId = fname.slice(0, -'.jsonl'.length);
+      const active = activeById.get(sessionId);
       candidates.push({
         entry: {
           id: sessionId,
@@ -124,7 +130,8 @@ export async function readChronicle(): Promise<ChronicleEntry[]> {
           cwd,
           repoName: basename(cwd),
           ts: s.mtimeMs,
-          running: active.some((k) => k.includes(cwd)),
+          running: Boolean(active),
+          busy: active?.busy ?? false,
         },
         path: filePath,
       });

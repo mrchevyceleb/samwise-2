@@ -70,6 +70,10 @@ export class CodexSession {
     return this.busy;
   }
 
+  sessionId(): string | null {
+    return this.threadId;
+  }
+
   listenerCount(): number {
     return this.subscriberCount;
   }
@@ -315,12 +319,14 @@ export function activeCodexSessions(): {
   cli: CliKind;
   cwd: string;
   busy: boolean;
+  sessionId: string | null;
   lastActivityAt: number;
 }[] {
   return Array.from(codexSessions.values()).map((s) => ({
     cli: 'codex',
     cwd: s.cwd,
     busy: s.isBusy(),
+    sessionId: s.sessionId(),
     lastActivityAt: s.lastActivityAt(),
   }));
 }

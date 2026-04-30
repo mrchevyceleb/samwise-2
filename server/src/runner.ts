@@ -58,10 +58,12 @@ class ClaudeSession {
   private pendingResumeId: string | null = null;
   /** session_id reported by the most recent init event. Persisted on every change. */
   private currentSessionId: string | null = null;
+  private readonly startedResumeId: string | null = null;
   private resumeFailed = false;
   private spawnError: string | null = null;
   private initSeen = false;
   private exitedBeforeInit = false;
+  private startupWaiters = new Set<(state: 'initialized' | 'closed') => void>();
   /** Resolves true once init is received, false if the process exits before init. */
   readonly ready: Promise<boolean>;
   private resolveReady!: (ok: boolean) => void;
@@ -71,6 +73,7 @@ class ClaudeSession {
     this.cwd = cwd;
     this.key = `${cli}|${cwd}`;
     this.pendingResumeId = resumeId;
+    this.startedResumeId = resumeId;
     this.ready = new Promise<boolean>((res) => { this.resolveReady = res; });
 
     // Quiet-ready: the modern claude binary doesn't emit system/init until it
@@ -113,14 +116,19 @@ class ClaudeSession {
     this.child.on('exit', (code, signal) => {
       if (!this.initSeen) {
         this.exitedBeforeInit = true;
+        if (this.pendingResumeId) void setSessionId(this.cli, this.cwd, '');
         this.resolveReady(false);
+        this.resolveStartupWaiters('closed');
       }
       this.emit({ type: 'closed', code, signal });
     });
 
     this.child.on('error', (err) => {
       this.spawnError = String(err?.message ?? err);
-      if (!this.initSeen) this.resolveReady(false);
+      if (!this.initSeen) {
+        this.resolveReady(false);
+        this.resolveStartupWaiters('closed');
+      }
       this.emit({ type: 'error', message: this.spawnError });
     });
   }
@@ -231,6 +239,35 @@ class ClaudeSession {
     return this.turnStartedAt !== null;
   }
 
+  sessionId(): string | null {
+    return this.currentSessionId ?? this.pendingResumeId;
+  }
+
+  startedWithResume(): boolean {
+    return Boolean(this.startedResumeId);
+  }
+
+  waitForInitOrExit(timeoutMs: number): Promise<'initialized' | 'closed' | 'timeout'> {
+    if (this.initSeen) return Promise.resolve('initialized');
+    if (this.exitedBeforeInit || this.child.exitCode !== null || this.spawnError) {
+      return Promise.resolve('closed');
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (state: 'initialized' | 'closed' | 'timeout') => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.startupWaiters.delete(waiter);
+        resolve(state);
+      };
+      const waiter = (state: 'initialized' | 'closed') => finish(state);
+      const timer = setTimeout(() => finish('timeout'), timeoutMs);
+      timer.unref?.();
+      this.startupWaiters.add(waiter);
+    });
+  }
+
   listenerCount(): number {
     return this.subscriberCount;
   }
@@ -250,6 +287,12 @@ class ClaudeSession {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
     }
     for (const fn of this.listeners) fn(se);
+  }
+
+  private resolveStartupWaiters(state: 'initialized' | 'closed'): void {
+    const waiters = Array.from(this.startupWaiters);
+    this.startupWaiters.clear();
+    for (const fn of waiters) fn(state);
   }
 
   private onStdout(chunk: string): void {
@@ -274,6 +317,7 @@ class ClaudeSession {
       this.pendingResumeId = null;
       this.initSeen = true;
       this.resolveReady(true);
+      this.resolveStartupWaiters('initialized');
       if (pending && pending !== ev.session_id) {
         this.resumeFailed = true;
         this.emit({
@@ -369,15 +413,11 @@ export function shutdownAllSessions(): void {
   sessions.clear();
 }
 
-/** All `${cli}|${cwd}` keys currently in the manager — used by the chronicle. */
-export function activeSessionKeys(): string[] {
-  return Array.from(sessions.keys());
-}
-
 export type LiveSession = {
   cli: CliKind;
   cwd: string;
   busy: boolean;
+  sessionId: string | null;
   /** ms since epoch of the most recent event (or spawn time if no events yet). */
   lastActivityAt: number;
 };
@@ -389,6 +429,7 @@ export function activeClaudeSessions(): LiveSession[] {
       cli: s.cli,
       cwd: s.cwd,
       busy: s.isBusy(),
+      sessionId: s.sessionId(),
       lastActivityAt: s.lastActivityAt(),
     });
   }

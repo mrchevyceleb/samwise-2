@@ -9,6 +9,7 @@ export type LiveSession = {
   cwd: string;
   repoName: string;
   busy: boolean;
+  sessionId: string | null;
   lastActivityAt: number;
 };
 

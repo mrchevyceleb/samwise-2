@@ -103,17 +103,15 @@ export function MobileThreshold({
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
   const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
   const [query, setQuery] = useState('');
-
-  if (selectedRepo === undefined && companion !== 'assistant' && regularRepos.length > 0) {
-    setSelectedRepo(regularRepos[0]);
-  }
+  const defaultRepo = regularRepos[0];
 
   const pickCompanion = (id: CompanionId) => {
     setCompanion(id);
     if (id === 'assistant') setSelectedRepo(liveAssistantHub);
   };
 
-  const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo;
+  const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
+  const selectedRepoPath = effectiveRepo?.path;
 
   return (
     <div
@@ -203,7 +201,7 @@ export function MobileThreshold({
         <PStat n={STATS.finished} l="finished" tone="moss" />
       </div>
 
-      {/* Live sessions — Sam may still be tending another errand. Tap to hop
+      {/* Live sessions — Sam may still have another errand warm. Tap to hop
           back in. Hidden when there's nothing running so the threshold stays
           clean for the common case. */}
       {liveSessions.length > 0 && (
@@ -227,7 +225,7 @@ export function MobileThreshold({
               letterSpacing: '0.18em',
             }}
           >
-            · now tending ·
+            · awake now ·
           </div>
           {liveSessions.map((s) => (
             <div
@@ -421,7 +419,7 @@ export function MobileThreshold({
                 <PRepo
                   key={r.path}
                   repo={r}
-                  selected={r.path === selectedRepo?.path}
+                  selected={r.path === selectedRepoPath}
                   onClick={() => setSelectedRepo(r)}
                 />
               ))}
@@ -453,7 +451,15 @@ export function MobileThreshold({
           <span style={{ marginLeft: 'auto' }} />
           <button
             className="sw-btn sw-btn-primary"
-            onClick={() => onSetForth({ companion, repo: effectiveRepo })}
+            onClick={() => {
+              const text = query.trim();
+              setQuery('');
+              onSetForth({
+                companion,
+                repo: effectiveRepo,
+                initialMessage: text || undefined,
+              });
+            }}
             style={{
               fontSize: 16,
               padding: '12px 22px',
@@ -1375,7 +1381,7 @@ function PChronicleRow({
           background: 'var(--vellum)',
           border: `1.5px solid ${c}`,
           flexShrink: 0,
-          animation: e.running ? 'sw-pulse 1.4s infinite' : 'none',
+          animation: e.busy ? 'sw-pulse 1.4s infinite' : 'none',
         }}
       />
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -1390,12 +1396,20 @@ function PChronicleRow({
           <span className="sw-folio" style={{ fontSize: 10, whiteSpace: 'nowrap' }}>
             {e.t}
           </span>
-          {e.running && (
+          {e.busy && (
             <span
               className="sw-smallcaps"
               style={{ fontSize: 9, color: 'var(--ember)', whiteSpace: 'nowrap' }}
             >
               tending
+            </span>
+          )}
+          {e.running && !e.busy && (
+            <span
+              className="sw-smallcaps"
+              style={{ fontSize: 9, color: 'var(--gold)', whiteSpace: 'nowrap' }}
+            >
+              warm
             </span>
           )}
           {e.awaits && (
@@ -1406,12 +1420,12 @@ function PChronicleRow({
               asks
             </span>
           )}
-          {e.done && (
+          {e.asleep && (
             <span
               className="sw-smallcaps"
-              style={{ fontSize: 9, color: 'var(--moss)', whiteSpace: 'nowrap' }}
+              style={{ fontSize: 9, color: 'var(--ink-faint)', whiteSpace: 'nowrap' }}
             >
-              finished
+              asleep
             </span>
           )}
         </div>

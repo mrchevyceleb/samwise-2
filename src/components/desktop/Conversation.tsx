@@ -272,6 +272,30 @@ export function Conversation({
         }}
       >
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 48px' }}>
+          {onBack && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                marginBottom: 8,
+              }}
+            >
+              <button
+                onClick={onBack}
+                className="sw-btn"
+                style={{
+                  fontSize: 12.5,
+                  padding: '4px 12px',
+                  minHeight: 0,
+                  fontFamily: 'var(--serif-display)',
+                  fontStyle: 'italic',
+                  color: 'var(--ember)',
+                }}
+              >
+                the threshold
+              </button>
+            </div>
+          )}
           <ChatInput
             agent={agent}
             repo={repo}

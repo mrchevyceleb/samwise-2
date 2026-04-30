@@ -39,7 +39,8 @@ export async function getSessionId(cli: Cli, repoPath: string): Promise<string |
 
 export async function setSessionId(cli: Cli, repoPath: string, sessionId: string): Promise<void> {
   const all = await load();
-  all[key(cli, repoPath)] = { sessionId, updatedAt: Date.now() };
+  if (sessionId) all[key(cli, repoPath)] = { sessionId, updatedAt: Date.now() };
+  else delete all[key(cli, repoPath)];
   // Coalesce concurrent writes.
   writeQueue = writeQueue.then(flush, flush);
   await writeQueue;

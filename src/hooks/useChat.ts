@@ -229,7 +229,7 @@ export function useChat(opts: {
   // Mirror the initial message into a ref so the WS onmessage handler can
   // read the latest value without re-subscribing every render.
   const initialMessageRef = useRef<string | null>(initialMessage ?? null);
-  initialMessageRef.current = initialMessage ?? null;
+  const initialSendInFlightRef = useRef(false);
   const onInitialMessageSentRef = useRef(onInitialMessageSent);
   onInitialMessageSentRef.current = onInitialMessageSent;
   /** Latest event seq received from server. Sent on reconnect for replay. */
@@ -238,6 +238,15 @@ export function useChat(opts: {
    *  storage. Writes are gated on this so we don't wipe a saved chat with the
    *  empty initial state on the first render after repos load. */
   const restoredKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (initialMessage) {
+      initialMessageRef.current = initialMessage;
+      initialSendInFlightRef.current = false;
+    } else if (!initialSendInFlightRef.current) {
+      initialMessageRef.current = null;
+    }
+  }, [initialMessage]);
 
   // Save to localStorage whenever blocks change, so a refresh restores them.
   // CRITICAL: skip until the read-and-restore effect below has run for the
@@ -302,19 +311,36 @@ export function useChat(opts: {
           // looking idle while events stream in via replay.
           setStatus(msg.busy ? 'streaming' : 'ready');
           // Send a pending first message (typed straight into the threshold)
-          // the moment the server says ready, not via a downstream effect.
+          // the moment the server says ready. Keep it pending until turnStart
+          // confirms the server accepted it, so startup reconnects do not lose
+          // threshold-entered prompts.
           const pending = initialMessageRef.current;
-          if (pending && ws.readyState === WebSocket.OPEN) {
-            initialMessageRef.current = null;
-            setBlocks((prev) => [
-              ...prev,
-              { kind: 'user', id: id(), text: pending, ts: Date.now() },
-            ]);
+          if (pending && !initialSendInFlightRef.current && ws.readyState === WebSocket.OPEN) {
+            initialSendInFlightRef.current = true;
+            setBlocks((prev) => {
+              const lastUser = [...prev].reverse().find((b) => b.kind === 'user');
+              if (lastUser && lastUser.kind === 'user' && lastUser.text === pending) return prev;
+              return [
+                ...prev,
+                { kind: 'user', id: id(), text: pending, ts: Date.now() },
+              ];
+            });
             ws.send(JSON.stringify({ type: 'send', text: pending }));
-            onInitialMessageSentRef.current?.();
           }
         }
-        else if (msg.type === 'turnStart') setStatus('streaming');
+        else if (msg.type === 'sessionRebound') {
+          lastSeqRef.current = 0;
+          setError(null);
+        }
+        else if (msg.type === 'turnStart') {
+          if (initialSendInFlightRef.current) {
+            initialSendInFlightRef.current = false;
+            initialMessageRef.current = null;
+            onInitialMessageSentRef.current?.();
+          }
+          setError(null);
+          setStatus('streaming');
+        }
         else if (msg.type === 'turnEnd') setStatus('ready');
         else if (msg.type === 'freshStarted') {
           setBlocks([]);
@@ -329,8 +355,8 @@ export function useChat(opts: {
           }
         }
         else if (msg.type === 'sessionClosed') {
-          setError('Sam closed the session. Say something to wake him.');
-          setStatus('ready');
+          setError('This warm session is asleep. Send a message to wake it.');
+          setStatus('closed');
         }
         else if (msg.type === 'stream') {
           setBlocks((prev) => reduce(prev, msg.event, turnIdRef));
@@ -356,6 +382,7 @@ export function useChat(opts: {
       };
       ws.onclose = () => {
         if (teardownRef.current) return;
+        if (initialSendInFlightRef.current) initialSendInFlightRef.current = false;
         setStatus('closed');
         const attempt = Math.min(reconnectAttemptRef.current, 3);
         const delay = Math.min(1000 * 2 ** attempt, 8000);

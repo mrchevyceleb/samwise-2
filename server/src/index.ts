@@ -29,6 +29,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = resolve(HERE, '..', '..', 'dist');
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 const IDLE_REAPER_INTERVAL_MS = 60 * 1000;
+const RESUME_STARTUP_WATCH_MS = 8000;
 
 await ensureStateDir();
 
@@ -56,6 +57,7 @@ app.get('/api/live', (_req, res) => {
       cwd: s.cwd,
       repoName: basename(s.cwd),
       busy: s.busy,
+      sessionId: s.sessionId,
       lastActivityAt: s.lastActivityAt,
     })),
   });
@@ -100,6 +102,11 @@ type ClientSteer = {
 };
 type ClientMsg = ClientHello | ClientSend | ClientFresh | ClientStop | ClientSteer;
 
+type ResumeWatchableSession = AnySession & {
+  startedWithResume?: () => boolean;
+  waitForInitOrExit?: (timeoutMs: number) => Promise<'initialized' | 'closed' | 'timeout'>;
+};
+
 let wsCounter = 0;
 
 wss.on('connection', (ws, req) => {
@@ -114,6 +121,7 @@ wss.on('connection', (ws, req) => {
   let busy = false;
   let cliKind: CliKind | null = null;
   let repoPath: string | null = null;
+  let turnGeneration = 0;
 
   const safeSend = (msg: object) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
@@ -152,6 +160,37 @@ wss.on('connection', (ws, req) => {
     unsubscribe?.();
     unsubscribe = session.subscribe(dispatch, sinceSeq);
     return session;
+  };
+
+  const retryOnceAfterStaleResume = async (
+    session: AnySession,
+    text: string,
+    generation: number,
+    images?: Array<{ mediaType: string; base64: string }>,
+  ): Promise<boolean> => {
+    if (!cliKind || !repoPath || cliKind === 'codex') return false;
+    const watchable = session as ResumeWatchableSession;
+    if (watchable.startedWithResume?.() !== true || !watchable.waitForInitOrExit) return false;
+
+    const state = await watchable.waitForInitOrExit(RESUME_STARTUP_WATCH_MS);
+    if (state !== 'closed') return false;
+    if (generation !== turnGeneration) return false;
+
+    console.log(`[ws#${wsId}] stale resume closed before init, retrying fresh`);
+    try {
+      const retrySession = await bindSession(getOrCreateSession({ cli: cliKind, repoPath }));
+      busy = true;
+      safeSend({ type: 'sessionRebound' });
+      safeSend({ type: 'turnStart' });
+      if ('send' in retrySession) (retrySession as any).send(text, images);
+      return true;
+    } catch (e) {
+      console.warn(`[ws#${wsId}] stale resume retry failed:`, (e as Error).message);
+      busy = false;
+      safeSend({ type: 'error', message: String((e as Error).message) });
+      safeSend({ type: 'turnEnd' });
+      return false;
+    }
   };
 
   ws.on('message', async (raw) => {
@@ -197,6 +236,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'steer') {
       console.log(`[ws#${wsId}] steer cli=${msg.cli} bytes=${msg.text.length}`);
       try {
+        turnGeneration += 1;
         await interruptSession({ cli: msg.cli, repoPath: msg.repo });
         cliKind = msg.cli;
         repoPath = msg.repo;
@@ -214,7 +254,10 @@ wss.on('connection', (ws, req) => {
         }
         if ('send' in session) {
           if (msg.cli === 'codex') (session as any).send(msg.text);
-          else (session as any).send(msg.text, msg.images);
+          else {
+            (session as any).send(msg.text, msg.images);
+            void retryOnceAfterStaleResume(session, msg.text, turnGeneration, msg.images);
+          }
         }
       } catch (e) {
         console.error(`[ws#${wsId}] steer failed:`, (e as Error).message);
@@ -228,6 +271,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'stop') {
       console.log(`[ws#${wsId}] stop cli=${msg.cli} repo=${msg.repo}`);
       try {
+        turnGeneration += 1;
         await interruptSession({ cli: msg.cli, repoPath: msg.repo });
         busy = false;
         safeSend({ type: 'turnEnd' });
@@ -244,6 +288,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'freshStart') {
       try {
+        turnGeneration += 1;
         const session = await bindSession(
           freshStart({ cli: msg.cli, repoPath: msg.repo }),
         );
@@ -285,6 +330,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       if (!busy) {
+        turnGeneration += 1;
         busy = true;
         safeSend({ type: 'turnStart' });
       }
@@ -303,6 +349,7 @@ wss.on('connection', (ws, req) => {
             (session as any).send(msg.text);
           } else {
             (session as any).send(msg.text, msg.images);
+            void retryOnceAfterStaleResume(session, msg.text, turnGeneration, msg.images);
           }
         }
       } catch (e) {
