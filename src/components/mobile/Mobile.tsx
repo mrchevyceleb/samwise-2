@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type TouchEvent, type WheelEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type TouchEvent, type WheelEvent } from 'react';
 import { SamPortrait, Dinkus, Chip, SearchGlyph } from '../primitives/atoms';
 import {
   SamMessage,
@@ -28,11 +28,14 @@ function MobileGrowingInput({
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const suggestion = getCommandSuggestion(value, commandPrefix, commands);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    const needed = el.scrollHeight;
+    const max = parseFloat(getComputedStyle(el).maxHeight) || Infinity;
+    el.style.height = `${Math.min(needed, max)}px`;
+    el.style.overflowY = needed > max ? 'auto' : 'hidden';
   }, [value]);
 
   const acceptSuggestion = () => {
@@ -98,7 +101,7 @@ function MobileGrowingInput({
             fontSize: 19,
             resize: 'none',
             maxHeight: '35dvh',
-            overflowY: 'auto',
+            overflowY: 'hidden',
             lineHeight: 1.45,
             minWidth: 0,
             padding: 0,
