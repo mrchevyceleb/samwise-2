@@ -7,13 +7,16 @@ export function useLiveBranch(path: string | undefined): {
   branch: string | undefined;
   refresh: () => void;
 } {
-  const [branch, setBranch] = useState<string | undefined>(undefined);
+  const [snapshot, setSnapshot] = useState<{
+    path: string;
+    branch: string | undefined;
+  } | null>(null);
   const [tick, setTick] = useState(0);
   const reqIdRef = useRef(0);
 
   useEffect(() => {
     if (!path) {
-      setBranch(undefined);
+      reqIdRef.current += 1;
       return;
     }
     const id = ++reqIdRef.current;
@@ -21,12 +24,13 @@ export function useLiveBranch(path: string | undefined): {
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((data: { branch: string | null }) => {
         if (id !== reqIdRef.current) return;
-        setBranch(data.branch ?? undefined);
+        setSnapshot({ path, branch: data.branch ?? undefined });
       })
       .catch(() => {
-        // Soft-fail: keep the prior value.
+        // Soft-fail. The returned branch is keyed by path, so stale labels stay hidden.
       });
   }, [path, tick]);
 
+  const branch = snapshot && snapshot.path === path ? snapshot.branch : undefined;
   return { branch, refresh: () => setTick((t) => t + 1) };
 }

@@ -166,14 +166,15 @@ function summarize(s: string): string {
   return `${firstLine.slice(0, 80)}…`;
 }
 
-function blocksStorageKey(cli: CompanionId, repoPath: string): string {
-  return `samwise-2:blocks:${cli}|${repoPath}`;
+function blocksStorageKey(cli: CompanionId, repoPath: string, sessionId?: string | null): string {
+  const sessionPart = sessionId ? `|session:${sessionId}` : '';
+  return `samwise-2:blocks:${cli}|${repoPath}${sessionPart}`;
 }
 
-function readStoredBlocks(cli: CompanionId, repoPath: string): ChatBlock[] {
+function readStoredBlocks(cli: CompanionId, repoPath: string, sessionId?: string | null): ChatBlock[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath));
+    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath, sessionId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed as ChatBlock[];
@@ -181,19 +182,24 @@ function readStoredBlocks(cli: CompanionId, repoPath: string): ChatBlock[] {
   return [];
 }
 
-function writeStoredBlocks(cli: CompanionId, repoPath: string, blocks: ChatBlock[]): void {
+function writeStoredBlocks(
+  cli: CompanionId,
+  repoPath: string,
+  blocks: ChatBlock[],
+  sessionId?: string | null,
+): void {
   if (typeof window === 'undefined') return;
   try {
     // Cap stored blocks so localStorage doesn't grow unbounded.
     const tail = blocks.slice(-200);
-    localStorage.setItem(blocksStorageKey(cli, repoPath), JSON.stringify(tail));
+    localStorage.setItem(blocksStorageKey(cli, repoPath, sessionId), JSON.stringify(tail));
   } catch {}
 }
 
-function readStoredSeq(cli: CompanionId, repoPath: string): number {
+function readStoredSeq(cli: CompanionId, repoPath: string, sessionId?: string | null): number {
   if (typeof window === 'undefined') return 0;
   try {
-    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath) + ':seq');
+    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath, sessionId) + ':seq');
     if (raw) {
       const n = Number(raw);
       if (Number.isFinite(n)) return n;
@@ -202,10 +208,15 @@ function readStoredSeq(cli: CompanionId, repoPath: string): number {
   return 0;
 }
 
-function writeStoredSeq(cli: CompanionId, repoPath: string, seq: number): void {
+function writeStoredSeq(
+  cli: CompanionId,
+  repoPath: string,
+  seq: number,
+  sessionId?: string | null,
+): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(blocksStorageKey(cli, repoPath) + ':seq', String(seq));
+    localStorage.setItem(blocksStorageKey(cli, repoPath, sessionId) + ':seq', String(seq));
   } catch {}
 }
 
@@ -214,9 +225,10 @@ export function useChat(opts: {
   cli: CompanionId;
   enabled: boolean;
   initialMessage?: string | null;
+  sessionId?: string | null;
   onInitialMessageSent?: () => void;
 }) {
-  const { repo, cli, enabled, initialMessage, onInitialMessageSent } = opts;
+  const { repo, cli, enabled, initialMessage, sessionId, onInitialMessageSent } = opts;
   const [blocks, setBlocks] = useState<ChatBlock[]>([]);
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -254,11 +266,11 @@ export function useChat(opts: {
   // writes blocks=[] over saved history before we get a chance to load it.
   useEffect(() => {
     if (!repo) return;
-    const key = `${cli}|${repo.path}`;
+    const key = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
     if (restoredKeyRef.current !== key) return;
-    writeStoredBlocks(cli, repo.path, blocks);
-    writeStoredSeq(cli, repo.path, lastSeqRef.current);
-  }, [blocks, repo?.path, cli]);
+    writeStoredBlocks(cli, repo.path, blocks, sessionId);
+    writeStoredSeq(cli, repo.path, lastSeqRef.current, sessionId);
+  }, [blocks, repo?.path, cli, sessionId]);
 
   useEffect(() => {
     if (!enabled || !repo) return;
@@ -266,15 +278,15 @@ export function useChat(opts: {
     teardownRef.current = false;
     // Restore prior blocks from localStorage so a page reload doesn't wipe
     // the chat. Server replay then fills in events newer than what we have.
-    const stored = readStoredBlocks(cli, repo.path);
+    const stored = readStoredBlocks(cli, repo.path, sessionId);
     setBlocks(stored);
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
     // Sequence we've already seen (persisted) — replay only what's newer.
-    lastSeqRef.current = readStoredSeq(cli, repo.path);
+    lastSeqRef.current = readStoredSeq(cli, repo.path, sessionId);
     // Mark this conversation as restored so the persistence-write effect can
     // safely begin saving updates back to storage.
-    restoredKeyRef.current = `${cli}|${repo.path}`;
+    restoredKeyRef.current = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
 
     const connect = () => {
       if (teardownRef.current) return;
@@ -350,8 +362,8 @@ export function useChat(opts: {
           turnIdRef.current = '';
           lastSeqRef.current = 0;
           if (repo) {
-            writeStoredBlocks(cli, repo.path, []);
-            writeStoredSeq(cli, repo.path, 0);
+            writeStoredBlocks(cli, repo.path, [], sessionId);
+            writeStoredSeq(cli, repo.path, 0, sessionId);
           }
         }
         else if (msg.type === 'sessionClosed') {
@@ -407,7 +419,7 @@ export function useChat(opts: {
         wsRef.current = null;
       }
     };
-  }, [enabled, repo?.path, cli]);
+  }, [enabled, repo?.path, cli, sessionId]);
 
   const send = (
     text: string,

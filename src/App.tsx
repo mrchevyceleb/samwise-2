@@ -25,7 +25,7 @@ type View = 'threshold' | 'conversation';
 // server-side event buffer can replay the missed turn output.
 const ACTIVE_KEY = 'samwise-2:active';
 const CHRONICLE_COLLAPSED_KEY = 'samwise-2:chronicle-collapsed';
-type ActiveSession = { cli: CompanionId; repoPath: string };
+type ActiveSession = { cli: CompanionId; repoPath: string; sessionId?: string | null };
 
 function readActive(): ActiveSession | null {
   if (typeof window === 'undefined') return null;
@@ -36,7 +36,13 @@ function readActive(): ActiveSession | null {
     if (
       v && (v.cli === 'claude' || v.cli === 'codex' || v.cli === 'assistant')
       && typeof v.repoPath === 'string'
-    ) return v;
+    ) {
+      return {
+        cli: v.cli,
+        repoPath: v.repoPath,
+        sessionId: typeof v.sessionId === 'string' ? v.sessionId : null,
+      };
+    }
     return null;
   } catch { return null; }
 }
@@ -85,6 +91,7 @@ export default function App() {
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [chronicleCollapsed, setChronicleCollapsed] = useState(readChronicleCollapsed);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [chatSessionId, setChatSessionId] = useState<string | null>(initialActive?.sessionId ?? null);
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
 
@@ -93,6 +100,7 @@ export default function App() {
     cli: companion,
     enabled: view === 'conversation' && !!repo,
     initialMessage: pendingFirstMessage,
+    sessionId: chatSessionId,
     onInitialMessageSent: () => setPendingFirstMessage(null),
   });
 
@@ -143,13 +151,20 @@ export default function App() {
     companion: c,
     repo: r,
     initialMessage,
-  }: { companion: CompanionId; repo?: Repo; initialMessage?: string }) => {
+    sessionId,
+  }: {
+    companion: CompanionId;
+    repo?: Repo;
+    initialMessage?: string;
+    sessionId?: string | null;
+  }) => {
     setCompanion(c);
     setRepo(r);
+    setChatSessionId(sessionId ?? null);
     setView('conversation');
     setErrandTitle('a fresh errand');
     setPendingFirstMessage(initialMessage ?? null);
-    if (r) writeActive({ cli: c, repoPath: r.path });
+    if (r) writeActive({ cli: c, repoPath: r.path, sessionId: sessionId ?? null });
     else writeActive(null);
   };
 
@@ -158,9 +173,18 @@ export default function App() {
     return known ? { ...known } : { path, name: name || basenameOfPath(path), hub: 'Live' };
   };
 
-  const openLiveSession = (s: { cli: CompanionId; cwd: string; repoName: string }) => {
+  const openLiveSession = (s: {
+    cli: CompanionId;
+    cwd: string;
+    repoName: string;
+    sessionId: string | null;
+  }) => {
     setActiveEventId(null);
-    setForth({ companion: s.cli, repo: repoForPath(s.cwd, s.repoName) });
+    setForth({
+      companion: s.cli,
+      repo: repoForPath(s.cwd, s.repoName),
+      sessionId: s.sessionId,
+    });
   };
 
   const openChronicleEvent = async (id: string) => {
@@ -185,7 +209,12 @@ export default function App() {
       console.warn('failed to activate chronicle session', e);
     }
 
-    setForth({ companion: c, repo: repoForPath(ev.cwd, ev.repo) });
+    const activatedRepo = repoForPath(ev.cwd, ev.repo);
+    setCompanion(c);
+    setRepo(activatedRepo);
+    setChatSessionId(ev.id);
+    setView('conversation');
+    writeActive({ cli: c, repoPath: ev.cwd, sessionId: ev.id });
     setErrandTitle(ev.title || 'a fresh errand');
   };
 

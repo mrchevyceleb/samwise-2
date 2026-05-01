@@ -101,7 +101,10 @@ app.post('/api/session/activate', async (req, res) => {
     return;
   }
   try {
-    dropSession(cli, cwd);
+    const active = activeClaudeSessions().find(
+      (s) => s.cli === cli && s.cwd === cwd && s.sessionId === sessionId,
+    );
+    if (!active) dropSession(cli, cwd);
     await setSessionId(cli, cwd, sessionId);
     res.json({ ok: true });
   } catch (e) {

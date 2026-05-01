@@ -192,6 +192,20 @@ export class CodexSession {
     const stderrChunks: string[] = [];
 
     let buf = '';
+    const handleStdoutLine = (line: string) => {
+      if (!line) return;
+      try {
+        const ev = JSON.parse(line);
+        this.handleCodexEvent(ev, turnState);
+      } catch {
+        // Non-JSON line, ignore.
+      }
+    };
+    const flushStdoutBuffer = () => {
+      const line = buf.trim();
+      buf = '';
+      handleStdoutLine(line);
+    };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       buf += chunk;
@@ -200,13 +214,7 @@ export class CodexSession {
         const line = buf.slice(0, nl).trim();
         buf = buf.slice(nl + 1);
         nl = buf.indexOf('\n');
-        if (!line) continue;
-        try {
-          const ev = JSON.parse(line);
-          this.handleCodexEvent(ev, turnState);
-        } catch {
-          // Non-JSON line — ignore.
-        }
+        handleStdoutLine(line);
       }
     });
 
@@ -214,7 +222,7 @@ export class CodexSession {
     child.stderr.on('data', (chunk: string) => {
       // Codex prints a few benign lines on startup (e.g. "Reading additional
       // input from stdin...") and a "thread X not found" rollout warning when
-      // resuming. Filter those — surface only the lines that look like real
+      // resuming. Filter those, surface only the lines that look like real
       // errors.
       const text = chunk.trim();
       if (!text) return;
@@ -224,7 +232,11 @@ export class CodexSession {
       this.emit({ type: 'error', message: text });
     });
 
-    child.on('exit', async (code) => {
+    let settled = false;
+    child.on('close', async (code) => {
+      if (settled) return;
+      settled = true;
+      flushStdoutBuffer();
       this.busy = false;
       this.currentChild = null;
       cleanupImages();
@@ -243,6 +255,9 @@ export class CodexSession {
     });
 
     child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      flushStdoutBuffer();
       this.busy = false;
       this.currentChild = null;
       cleanupImages();
