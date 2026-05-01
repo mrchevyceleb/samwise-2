@@ -1,0 +1,32 @@
+import { useEffect, useRef, useState } from 'react';
+
+// Fetches the current git branch for a repo path. Re-runs when `path`
+// changes; call `refresh()` to re-fetch (e.g., after a turn that may
+// have switched branches via `git checkout`).
+export function useLiveBranch(path: string | undefined): {
+  branch: string | undefined;
+  refresh: () => void;
+} {
+  const [branch, setBranch] = useState<string | undefined>(undefined);
+  const [tick, setTick] = useState(0);
+  const reqIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!path) {
+      setBranch(undefined);
+      return;
+    }
+    const id = ++reqIdRef.current;
+    fetch(`/api/branch?path=${encodeURIComponent(path)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((data: { branch: string | null }) => {
+        if (id !== reqIdRef.current) return;
+        setBranch(data.branch ?? undefined);
+      })
+      .catch(() => {
+        // Soft-fail: keep the prior value.
+      });
+  }, [path, tick]);
+
+  return { branch, refresh: () => setTick((t) => t + 1) };
+}

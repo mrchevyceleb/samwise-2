@@ -19,6 +19,19 @@ export type Listener = (e: SeqEvent) => void;
 let nextSyntheticId = 1;
 const synth = (prefix: string) => `${prefix}_${nextSyntheticId++}`;
 type ChatImage = { mediaType: string; base64: string };
+type ToolUseBlock = { index: number; toolUseId: string };
+type CodexTurnState = {
+  messageId: string;
+  nextBlockIndex: number;
+  toolUseBlocks: Map<string, ToolUseBlock>;
+};
+
+const CODEX_TURN_PREAMBLE = [
+  '<samwise-codex-runtime>',
+  'When you run shell commands that may take more than a few seconds or need polling, use exec_command with tty=true. This includes gh run watch, dev servers, test watchers, and other watch or follow commands.',
+  'If you see "stdin is closed for this session", rerun the command with tty=true.',
+  '</samwise-codex-runtime>',
+].join('\n');
 
 const imageExtension = (mediaType: string): string => {
   if (mediaType === 'image/jpeg') return 'jpg';
@@ -143,6 +156,7 @@ export class CodexSession {
       return;
     }
 
+    const prompt = `${CODEX_TURN_PREAMBLE}\n\n${text}`;
     const args: string[] = this.threadId
       ? [
           'exec',
@@ -151,14 +165,14 @@ export class CodexSession {
           '--dangerously-bypass-approvals-and-sandbox',
           ...imageArgs,
           this.threadId,
-          text,
+          prompt,
         ]
       : [
           'exec',
           '--json',
           '--dangerously-bypass-approvals-and-sandbox',
           ...imageArgs,
-          text,
+          prompt,
         ];
 
     const child = spawn('codex', args, {
@@ -170,9 +184,12 @@ export class CodexSession {
 
     // Synthesize a claude-shaped message_start so the reducer's turn handling
     // stays consistent across CLIs.
-    const messageId = synth('msg');
-    let nextBlockIndex = 0;
-    const toolUseBlocks = new Map<string, { index: number; tool: string; toolUseId: string }>();
+    const turnState: CodexTurnState = {
+      messageId: synth('msg'),
+      nextBlockIndex: 0,
+      toolUseBlocks: new Map(),
+    };
+    const stderrChunks: string[] = [];
 
     let buf = '';
     child.stdout.setEncoding('utf8');
@@ -186,9 +203,7 @@ export class CodexSession {
         if (!line) continue;
         try {
           const ev = JSON.parse(line);
-          this.handleCodexEvent(ev, { messageId, nextBlockIndex, toolUseBlocks });
-          // nextBlockIndex is mutated through the closure — we use a wrapper
-          // object so the inner method can bump it.
+          this.handleCodexEvent(ev, turnState);
         } catch {
           // Non-JSON line — ignore.
         }
@@ -205,6 +220,7 @@ export class CodexSession {
       if (!text) return;
       if (/Reading additional input from stdin/i.test(text)) return;
       if (/failed to record rollout items/i.test(text)) return;
+      stderrChunks.push(text);
       this.emit({ type: 'error', message: text });
     });
 
@@ -212,6 +228,7 @@ export class CodexSession {
       this.busy = false;
       this.currentChild = null;
       cleanupImages();
+      this.closeDanglingToolBlocks(turnState, code, stderrChunks.join('\n').trim());
       // Emit a result event so the front-end flips status back to 'ready'.
       this.emitClaudeEvent({
         type: 'result',
@@ -229,6 +246,7 @@ export class CodexSession {
       this.busy = false;
       this.currentChild = null;
       cleanupImages();
+      this.closeDanglingToolBlocks(turnState, null, err.message);
       this.emit({ type: 'error', message: `codex spawn failed: ${err.message}` });
       this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
     });
@@ -253,11 +271,7 @@ export class CodexSession {
 
   private handleCodexEvent(
     ev: any,
-    state: {
-      messageId: string;
-      nextBlockIndex: number;
-      toolUseBlocks: Map<string, { index: number; tool: string; toolUseId: string }>;
-    },
+    state: CodexTurnState,
   ): void {
     if (!ev || typeof ev !== 'object') return;
 
@@ -288,7 +302,6 @@ export class CodexSession {
       const toolUseId = synth('tool');
       state.toolUseBlocks.set(ev.item.id, {
         index: idx,
-        tool: 'Bash',
         toolUseId,
       });
       this.emitClaudeEvent({
@@ -336,6 +349,7 @@ export class CodexSession {
           ],
         },
       });
+      state.toolUseBlocks.delete(ev.item.id);
       return;
     }
 
@@ -366,6 +380,40 @@ export class CodexSession {
     }
 
     // Other event types (turn.completed, etc.) — ignore.
+  }
+
+  private closeDanglingToolBlocks(
+    state: CodexTurnState,
+    code: number | null,
+    detail: string,
+  ): void {
+    if (state.toolUseBlocks.size === 0) return;
+
+    const fallback = code === 0
+      ? 'Codex finished before reporting command output.'
+      : `Codex exited before this command returned${typeof code === 'number' ? ` (code ${code})` : ''}.`;
+    const text = detail || fallback;
+
+    for (const block of state.toolUseBlocks.values()) {
+      this.emitClaudeEvent({
+        type: 'stream_event',
+        event: { type: 'content_block_stop', index: block.index },
+      });
+      this.emitClaudeEvent({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: block.toolUseId,
+              content: [{ type: 'text', text }],
+            },
+          ],
+        },
+      });
+    }
+    state.toolUseBlocks.clear();
   }
 }
 

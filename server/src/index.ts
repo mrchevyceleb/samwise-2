@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { PORT } from './config.ts';
-import { discoverRepos } from './repos.ts';
+import { discoverRepos, gitBranch } from './repos.ts';
 import { readChronicle } from './chronicle.ts';
 import { readCommands } from './commands.ts';
 import { ensureStateDir } from './sessions.ts';
@@ -45,6 +45,20 @@ app.get('/api/repos', async (_req, res) => {
   try {
     const repos = await discoverRepos();
     res.json({ repos });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.get('/api/branch', async (req, res) => {
+  const path = typeof req.query.path === 'string' ? req.query.path : '';
+  if (!path) {
+    res.status(400).json({ error: 'path required' });
+    return;
+  }
+  try {
+    const branch = await gitBranch(path);
+    res.json({ branch: branch ?? null });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }

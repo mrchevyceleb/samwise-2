@@ -21,7 +21,7 @@ export type DiscoveredRepo = {
   isAssistantHub?: boolean;
 };
 
-async function gitBranch(path: string): Promise<string | undefined> {
+export async function gitBranch(path: string): Promise<string | undefined> {
   try {
     const { stdout } = await exec('git', ['-C', path, 'symbolic-ref', '--short', 'HEAD']);
     return stdout.trim() || undefined;

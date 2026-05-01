@@ -14,6 +14,7 @@ import { useChat } from './hooks/useChat';
 import { useChronicle } from './hooks/useChronicle';
 import { useCommands } from './hooks/useCommands';
 import { useLive } from './hooks/useLive';
+import { useLiveBranch } from './hooks/useLiveBranch';
 import { useTheme } from './hooks/useTheme';
 
 type View = 'threshold' | 'conversation';
@@ -99,15 +100,21 @@ export default function App() {
     }
   }, [repos, reposLoading, repo]);
 
+  // Track the live branch for the active repo so `git checkout` mid-chat
+  // updates the header chip and the chat-input footer in real time.
+  const liveBranch = useLiveBranch(repo?.path);
+
   // Refresh the chronicle whenever a turn finishes — Sam may have just
-  // written a new session file we haven't seen.
+  // written a new session file we haven't seen. Same hook also re-checks
+  // the branch (a turn may have switched it).
   const prevStatusRef = useRef(chat.status);
   useEffect(() => {
     if (prevStatusRef.current === 'streaming' && chat.status === 'ready') {
       setChronicleTick((t) => t + 1);
+      liveBranch.refresh();
     }
     prevStatusRef.current = chat.status;
-  }, [chat.status]);
+  }, [chat.status, liveBranch]);
 
   // Derive a title from the user's first message in the chat.
   useEffect(() => {
@@ -139,8 +146,9 @@ export default function App() {
     writeActive(null);
   };
 
+  const branchForLabel = liveBranch.branch ?? repo?.branch;
   const repoLabel = repo
-    ? `${repo.name}${repo.branch ? ` · ${repo.branch}` : ''}`
+    ? `${repo.name}${branchForLabel ? ` · ${branchForLabel}` : ''}`
     : 'just chatting';
   const commandPrefix = companion === 'codex' ? '$' : '/';
   const activeCommands = companion === 'codex' ? commands.codex : commands.claude;
@@ -227,6 +235,7 @@ export default function App() {
         style={{
           flex: 1,
           minWidth: 0,
+          minHeight: 0,
           display: 'flex',
           flexDirection: 'column',
         }}

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type WheelEvent } from 'react';
 import { SamPortrait, Dinkus, Chip } from '../primitives/atoms';
 import {
   SamMessage,
@@ -47,6 +47,8 @@ const statusLabel: Record<Status, string> = {
   error: 'troubled',
 };
 
+const FOLLOW_THRESHOLD_PX = 72;
+
 export function Conversation({
   agent = 'Claude Code',
   repo = '',
@@ -67,17 +69,21 @@ export function Conversation({
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef(true);
+  const pinningRef = useRef(false);
 
-  // Pin to bottom on every blocks update unless the user has scrolled up.
-  // Two layers: scrollIntoView on a sentinel covers most cases, and an rAF
-  // pass after that catches the case where layout hadn't finished when
-  // useEffect first ran.
+  // Follow the composer while the user is already at the bottom. Scrolling up
+  // opts out until they return to the bottom, so streaming text does not fight
+  // the reader.
   useEffect(() => {
     if (!stickyRef.current) return;
     const pin = () => {
+      pinningRef.current = true;
       bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
       const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) el.scrollTop = el.scrollHeight - el.clientHeight;
+      requestAnimationFrame(() => {
+        pinningRef.current = false;
+      });
     };
     pin();
     const id = requestAnimationFrame(pin);
@@ -85,10 +91,15 @@ export function Conversation({
   }, [blocks, status]);
 
   const onScroll = () => {
+    if (pinningRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickyRef.current = distanceFromBottom < 120;
+    stickyRef.current = distanceFromBottom < FOLLOW_THRESHOLD_PX;
+  };
+
+  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) stickyRef.current = false;
   };
 
   return (
@@ -99,17 +110,20 @@ export function Conversation({
         flexDirection: 'column',
         background: 'var(--vellum)',
         minWidth: 0,
+        minHeight: 0,
       }}
     >
       <div
         ref={scrollRef}
         onScroll={onScroll}
+        onWheel={onWheel}
         className="sw-scroll"
         style={{
           flex: 1,
+          minHeight: 0,
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '28px 0 0',
+          padding: '28px 0 8px',
         }}
       >
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 48px' }}>
@@ -263,7 +277,7 @@ export function Conversation({
             </p>
           )}
 
-          <div style={{ height: 28 }} />
+          <div style={{ height: 8 }} />
           <div ref={bottomRef} aria-hidden style={{ height: 1 }} />
         </div>
       </div>
@@ -273,6 +287,7 @@ export function Conversation({
           padding: '18px 0 26px',
           borderTop: '1px solid var(--rule-soft)',
           background: 'var(--vellum)',
+          flexShrink: 0,
         }}
       >
         <div style={{ maxWidth: 760, margin: '0 auto', padding: '0 48px' }}>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type TouchEvent, type WheelEvent } from 'react';
 import { SamPortrait, Dinkus, Chip, SearchGlyph } from '../primitives/atoms';
 import {
   SamMessage,
@@ -284,31 +284,54 @@ export function MobileThreshold({
             borderRadius: 4,
             boxShadow: '0 1px 0 var(--shadow-warm)',
             overflow: 'hidden',
+            flexShrink: 0,
           }}
         >
           <div
-            className="sw-smallcaps"
             style={{
-              fontSize: 9.5,
-              padding: '10px 14px 4px',
-              color: 'var(--ember)',
-              letterSpacing: '0.18em',
+              padding: '10px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              borderBottom: '1px solid var(--rule-soft)',
             }}
           >
-            · awake now ·
+            <span
+              className="sw-smallcaps"
+              style={{
+                fontSize: 10,
+                color: 'var(--ember)',
+                letterSpacing: '0.18em',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              · awake now ·
+            </span>
+            <span
+              className="sw-folio"
+              style={{
+                marginLeft: 'auto',
+                color: 'var(--ink-soft)',
+                fontSize: 12,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {liveSessions.length}
+            </span>
           </div>
           {liveSessions.map((s) => (
             <div
               key={`${s.cli}|${s.cwd}`}
               onClick={() => onSelectLive?.(s)}
               style={{
-                padding: '8px 14px',
+                padding: '10px 14px',
                 display: 'flex',
                 alignItems: 'center',
                 gap: 10,
                 cursor: 'pointer',
                 background: s.busy ? 'rgba(184,89,58,0.10)' : 'transparent',
-                borderTop: '1px solid var(--rule-soft)',
+                borderTop: '1px solid rgba(216,201,168,0.45)',
+                minHeight: 46,
               }}
             >
               <span
@@ -339,8 +362,8 @@ export function MobileThreshold({
                 <div
                   className="sw-mono"
                   style={{
-                    fontSize: 10.5,
-                    color: 'var(--ink-faint)',
+                    fontSize: 11,
+                    color: 'var(--ink-soft)',
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -623,14 +646,20 @@ export function MobileConversation({
   const bottomRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLDivElement>(null);
   const stickyRef = useRef(true);
+  const pinningRef = useRef(false);
+  const touchYRef = useRef<number | null>(null);
   const [composerHeight, setComposerHeight] = useState(132);
 
   useEffect(() => {
     if (!stickyRef.current) return;
     const pin = () => {
+      pinningRef.current = true;
       bottomRef.current?.scrollIntoView({ block: 'end', behavior: 'auto' });
       const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      if (el) el.scrollTop = el.scrollHeight - el.clientHeight;
+      requestAnimationFrame(() => {
+        pinningRef.current = false;
+      });
     };
     pin();
     const id = requestAnimationFrame(pin);
@@ -652,10 +681,32 @@ export function MobileConversation({
   }, []);
 
   const onScroll = () => {
+    if (pinningRef.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickyRef.current = distanceFromBottom < 120;
+    stickyRef.current = distanceFromBottom < 72;
+  };
+
+  const onWheel = (e: WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY < 0) stickyRef.current = false;
+  };
+
+  const onTouchStart = (e: TouchEvent<HTMLDivElement>) => {
+    touchYRef.current = e.touches[0]?.clientY ?? null;
+  };
+
+  const onTouchMove = (e: TouchEvent<HTMLDivElement>) => {
+    const previous = touchYRef.current;
+    const current = e.touches[0]?.clientY ?? null;
+    if (previous !== null && current !== null && current > previous + 4) {
+      stickyRef.current = false;
+    }
+    touchYRef.current = current;
+  };
+
+  const onTouchEnd = () => {
+    touchYRef.current = null;
   };
 
   const ingestFiles = async (files: FileList | File[]) => {
@@ -751,6 +802,7 @@ export function MobileConversation({
       >
         <button
           onClick={onBack}
+          aria-label="go to threshold"
           style={{
             background: 'transparent',
             border: 0,
@@ -764,7 +816,7 @@ export function MobileConversation({
             cursor: 'pointer',
           }}
         >
-          ← errands
+          threshold v
         </button>
         <SamPortrait size={28} />
         <span
@@ -831,9 +883,14 @@ export function MobileConversation({
       <div
         ref={scrollRef}
         onScroll={onScroll}
+        onWheel={onWheel}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
         className="sw-scroll"
         style={{
           flex: 1,
+          minHeight: 0,
           overflowY: 'auto',
           overflowX: 'hidden',
           padding: '22px 22px 12px',
@@ -940,6 +997,7 @@ export function MobileConversation({
           padding: '12px 14px 10px',
           borderTop: '1px solid var(--rule-soft)',
           background: 'var(--parchment-2)',
+          flexShrink: 0,
         }}
       >
         {pendingImages.length > 0 && (
@@ -1021,25 +1079,6 @@ export function MobileConversation({
             }
           }}
         >
-          <button
-            onClick={onBack}
-            aria-label="go to errands"
-            style={{
-              height: 48,
-              padding: '0 12px',
-              borderRadius: 8,
-              border: '1px solid var(--rule-soft)',
-              background: 'var(--parchment-2)',
-              color: 'var(--ember)',
-              fontFamily: 'var(--serif-display)',
-              fontStyle: 'italic',
-              fontSize: 14,
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          >
-            errands
-          </button>
           <MobileGrowingInput
             value={draft}
             onChange={setDraft}
@@ -1091,12 +1130,29 @@ export function MobileConversation({
         <div
           style={{
             display: 'flex',
+            alignItems: 'center',
             gap: 8,
             marginTop: 8,
             padding: '0 4px',
             flexWrap: 'wrap',
           }}
         >
+          <button
+            onClick={onBack}
+            aria-label="go to threshold"
+            style={{
+              border: 0,
+              background: 'transparent',
+              color: 'var(--ember)',
+              padding: '7px 2px',
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 13,
+              cursor: 'pointer',
+            }}
+          >
+            threshold v
+          </button>
           {acceptImages && (
             <button
               onClick={() => fileInputRef.current?.click()}
