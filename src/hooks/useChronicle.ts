@@ -33,6 +33,7 @@ function toEvent(e: ServerEntry): ChronicleEvent {
     t: timeLabel(e.ts),
     title: e.title,
     repo: e.repoName,
+    cwd: e.cwd,
     kind: e.busy ? 'ember' : e.running ? 'gold' : 'ink',
     running: e.running || undefined,
     busy: e.busy || undefined,

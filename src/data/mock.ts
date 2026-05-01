@@ -47,6 +47,7 @@ export type ChronicleEvent = {
   t: string;
   title: string;
   repo: string;
+  cwd?: string;
   kind: ChronicleEventKind;
   running?: boolean;
   busy?: boolean;

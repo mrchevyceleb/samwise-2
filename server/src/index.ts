@@ -8,11 +8,12 @@ import { PORT } from './config.ts';
 import { discoverRepos, gitBranch } from './repos.ts';
 import { readChronicle } from './chronicle.ts';
 import { readCommands } from './commands.ts';
-import { ensureStateDir } from './sessions.ts';
+import { ensureStateDir, setSessionId } from './sessions.ts';
 import {
   getOrCreateSession,
   freshStart,
   interruptSession,
+  dropSession,
   shutdownAllSessions,
   activeClaudeSessions,
   pruneIdleClaudeSessions,
@@ -82,6 +83,27 @@ app.get('/api/chronicle', async (_req, res) => {
   try {
     const events = await readChronicle();
     res.json({ events });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.post('/api/session/activate', async (req, res) => {
+  const cli = req.body?.cli as CliKind | undefined;
+  const cwd = typeof req.body?.cwd === 'string' ? req.body.cwd : '';
+  const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : '';
+  if (!cli || !cwd || !sessionId) {
+    res.status(400).json({ error: 'cli, cwd, and sessionId required' });
+    return;
+  }
+  if (cli !== 'claude' && cli !== 'assistant') {
+    res.status(400).json({ error: 'only claude-backed sessions can be activated' });
+    return;
+  }
+  try {
+    dropSession(cli, cwd);
+    await setSessionId(cli, cwd, sessionId);
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }

@@ -16,6 +16,7 @@ import { useCommands } from './hooks/useCommands';
 import { useLive } from './hooks/useLive';
 import { useLiveBranch } from './hooks/useLiveBranch';
 import { useTheme } from './hooks/useTheme';
+import { ASSISTANT_HUB } from './data/mock';
 
 type View = 'threshold' | 'conversation';
 
@@ -23,6 +24,7 @@ type View = 'threshold' | 'conversation';
 // browser refresh / network blip lands you back where you were and the
 // server-side event buffer can replay the missed turn output.
 const ACTIVE_KEY = 'samwise-2:active';
+const CHRONICLE_COLLAPSED_KEY = 'samwise-2:chronicle-collapsed';
 type ActiveSession = { cli: CompanionId; repoPath: string };
 
 function readActive(): ActiveSession | null {
@@ -45,11 +47,20 @@ function writeActive(v: ActiveSession | null): void {
   else localStorage.removeItem(ACTIVE_KEY);
 }
 
+function readChronicleCollapsed(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(CHRONICLE_COLLAPSED_KEY) === '1';
+}
+
 const COMPANION_LABEL: Record<CompanionId, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
   assistant: 'Assistant',
 };
+
+function basenameOfPath(path: string): string {
+  return path.split('/').filter(Boolean).pop() ?? path;
+}
 
 export default function App() {
   const isMobile = useIsMobile();
@@ -72,6 +83,7 @@ export default function App() {
   const [repo, setRepo] = useState<Repo | undefined>(undefined);
   const restorePathRef = useRef<string | null>(initialActive?.repoPath ?? null);
   const [chronicleOpen, setChronicleOpen] = useState(false);
+  const [chronicleCollapsed, setChronicleCollapsed] = useState(readChronicleCollapsed);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
@@ -141,6 +153,42 @@ export default function App() {
     else writeActive(null);
   };
 
+  const repoForPath = (path: string, name?: string): Repo => {
+    const known = repos.find((r) => r.path === path);
+    return known ? { ...known } : { path, name: name || basenameOfPath(path), hub: 'Live' };
+  };
+
+  const openLiveSession = (s: { cli: CompanionId; cwd: string; repoName: string }) => {
+    setActiveEventId(null);
+    setForth({ companion: s.cli, repo: repoForPath(s.cwd, s.repoName) });
+  };
+
+  const openChronicleEvent = async (id: string) => {
+    const ev = chronicle.events.find((e) => e.id === id);
+    if (!ev) return;
+    setActiveEventId(id);
+
+    if (!ev.cwd) {
+      setView('conversation');
+      return;
+    }
+
+    const c: CompanionId = ev.cwd === ASSISTANT_HUB.path ? 'assistant' : 'claude';
+    try {
+      const r = await fetch('/api/session/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cli: c, cwd: ev.cwd, sessionId: ev.id }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    } catch (e) {
+      console.warn('failed to activate chronicle session', e);
+    }
+
+    setForth({ companion: c, repo: repoForPath(ev.cwd, ev.repo) });
+    setErrandTitle(ev.title || 'a fresh errand');
+  };
+
   const goToThreshold = () => {
     setView('threshold');
     writeActive(null);
@@ -155,6 +203,10 @@ export default function App() {
 
   const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
 
+  useEffect(() => {
+    localStorage.setItem(CHRONICLE_COLLAPSED_KEY, chronicleCollapsed ? '1' : '0');
+  }, [chronicleCollapsed]);
+
   if (isMobile) {
     return (
       <div className={appClass}>
@@ -165,8 +217,7 @@ export default function App() {
             onSetForth={setForth}
             liveSessions={liveSessions}
             onSelectLive={(s) => {
-              const target = repos.find((r) => r.path === s.cwd);
-              if (target) setForth({ companion: s.cli, repo: target });
+              openLiveSession(s);
             }}
             theme={theme}
             onToggleTheme={toggleTheme}
@@ -196,9 +247,8 @@ export default function App() {
           open={chronicleOpen}
           onClose={() => setChronicleOpen(false)}
           onSelect={(id) => {
-            setActiveEventId(id);
             setChronicleOpen(false);
-            setView('conversation');
+            void openChronicleEvent(id);
           }}
           onNew={() => {
             setChronicleOpen(false);
@@ -214,18 +264,14 @@ export default function App() {
       <ChronicleRibbon
         events={chronicle.events}
         activeId={view === 'conversation' ? activeEventId : null}
-        collapsed={view === 'threshold'}
+        collapsed={chronicleCollapsed}
+        onToggleCollapsed={() => setChronicleCollapsed((v) => !v)}
         liveSessions={liveSessions}
         onSelectLive={(s) => {
-          // Hop into that running session: bind to the matching repo and switch view.
-          const target = repos.find((r) => r.path === s.cwd);
-          if (target) {
-            setForth({ companion: s.cli, repo: target });
-          }
+          openLiveSession(s);
         }}
         onSelect={(id) => {
-          setActiveEventId(id);
-          setView('conversation');
+          void openChronicleEvent(id);
         }}
         onNew={() => setView('threshold')}
         theme={theme}

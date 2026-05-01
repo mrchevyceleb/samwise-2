@@ -25,6 +25,7 @@ export function ChronicleRibbon({
   onToggleTheme,
   liveSessions = [],
   onSelectLive,
+  onToggleCollapsed,
 }: {
   events: ChronicleEvent[];
   activeId?: string | null;
@@ -35,6 +36,7 @@ export function ChronicleRibbon({
   onToggleTheme?: () => void;
   liveSessions?: LiveSession[];
   onSelectLive?: (s: LiveSession) => void;
+  onToggleCollapsed?: () => void;
 }) {
   const wide = !collapsed;
   const ribbonWidth = wide ? 260 : 104;
@@ -60,26 +62,64 @@ export function ChronicleRibbon({
       }}
     >
       <div
-        onClick={onNew}
-        title="back to the threshold"
         style={{
-          padding: wide ? '0 18px 14px' : '0 20px 14px',
+          padding: wide ? '0 14px 14px 18px' : '0 10px 14px',
           display: 'flex',
           alignItems: 'center',
-          gap: 10,
-          cursor: 'pointer',
+          gap: 8,
         }}
       >
-        <SamPortrait size={wide ? 30 : 34} />
-        {wide && (
-          <span className="sw-smallcaps" style={{ fontSize: 12, color: 'var(--ink)' }}>
-            The chronicle
-          </span>
-        )}
-        {wide && (
-          <span className="sw-folio" style={{ marginLeft: 'auto', fontSize: 14, color: 'var(--ink-soft)' }}>
-            v
-          </span>
+        <button
+          onClick={onNew}
+          title="back to the threshold"
+          aria-label="back to the threshold"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            border: 0,
+            background: 'transparent',
+            padding: 0,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            cursor: 'pointer',
+            color: 'var(--ink)',
+          }}
+        >
+          <SamPortrait size={wide ? 30 : 34} />
+          {wide && (
+            <span className="sw-smallcaps" style={{ fontSize: 12, color: 'var(--ink)' }}>
+              The chronicle
+            </span>
+          )}
+          {wide && (
+            <span className="sw-folio" style={{ marginLeft: 'auto', fontSize: 14, color: 'var(--ink-soft)' }}>
+              v
+            </span>
+          )}
+        </button>
+        {onToggleCollapsed && (
+          <button
+            onClick={onToggleCollapsed}
+            title={wide ? 'collapse chronicle' : 'expand chronicle'}
+            aria-label={wide ? 'collapse chronicle' : 'expand chronicle'}
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: '50%',
+              border: '1px solid var(--rule-soft)',
+              background: 'var(--vellum)',
+              color: 'var(--ink-soft)',
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 16,
+              lineHeight: 1,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            {wide ? '<' : '>'}
+          </button>
         )}
       </div>
       <hr className="sw-rule-solid" style={{ margin: wide ? '0 16px 12px' : '0 14px 12px' }} />
