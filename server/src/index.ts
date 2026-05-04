@@ -171,42 +171,69 @@ wss.on('connection', (ws, req) => {
   let cliKind: CliKind | null = null;
   let repoPath: string | null = null;
   let turnGeneration = 0;
+  // Monotonic generation for bindSession. The latest call always wins
+  // regardless of resolve order — fixes a race where two overlapping binds
+  // could land subscriptions out of order, leaving the WS subscribed to
+  // session A while sessionPromise pointed at session B (cross-repo bleed).
+  let bindGen = 0;
+  let activeBindGen = 0;
+  let activeSessionKey: string | null = null;
 
   const safeSend = (msg: object) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
   };
 
-  const dispatch = (se: { seq: number; ev: any }) => {
-    const sev = se.ev;
-    if (sev.type === 'event') {
-      safeSend({ type: 'stream', event: sev.event, seq: se.seq });
-    } else if (sev.type === 'turnEnd') {
-      busy = false;
-      safeSend({ type: 'turnEnd', sessionId: sev.sessionId, seq: se.seq });
-    } else if (sev.type === 'error') {
-      safeSend({ type: 'error', message: sev.message, seq: se.seq });
-    } else if (sev.type === 'closed') {
-      safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq });
-      // The CLI process is dead. Drop the stale promise + subscription so the
-      // next `send` hits the recovery branch and rebinds via getOrCreateSession
-      // (which spawns a fresh process resuming from the saved session_id).
-      // Without this the client is stuck emitting "session has exited" until
-      // they hit Clear.
-      sessionPromise = null;
-      busy = false;
-      unsubscribe?.();
-      unsubscribe = null;
-    }
-  };
-
   // Bind to a session and subscribe this WebSocket to its event stream.
+  // Returns null when a newer bindSession call has superseded this one
+  // during the await — callers MUST bail in that case so they don't send
+  // stale `ready`/`turnStart`/`freshStarted` events or mutate `busy` for
+  // the wrong session.
   const bindSession = async (
     promise: Promise<AnySession>,
     sinceSeq: number = -1,
-  ): Promise<AnySession> => {
+  ): Promise<AnySession | null> => {
+    const myGen = ++bindGen;
     sessionPromise = promise;
     const session = await promise;
+    if (myGen !== bindGen) {
+      // A newer bindSession superseded us during the await. The newer call
+      // owns the subscription AND the response to the client.
+      return null;
+    }
     unsubscribe?.();
+    activeBindGen = myGen;
+    const sessionKey = session.key;
+    activeSessionKey = sessionKey;
+
+    const dispatch = (se: { seq: number; ev: any }) => {
+      // Defensive: if a newer binding has taken over since this listener was
+      // attached but unsubscribe hasn't run yet, drop the event.
+      if (activeBindGen !== myGen) return;
+      const sev = se.ev;
+      if (sev.type === 'event') {
+        safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey });
+      } else if (sev.type === 'turnEnd') {
+        busy = false;
+        safeSend({ type: 'turnEnd', sessionId: sev.sessionId, seq: se.seq, sessionKey });
+      } else if (sev.type === 'error') {
+        safeSend({ type: 'error', message: sev.message, seq: se.seq, sessionKey });
+      } else if (sev.type === 'closed') {
+        safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq, sessionKey });
+        // The CLI process is dead. Drop the stale promise + subscription so
+        // the next `send` hits the recovery branch and rebinds via
+        // getOrCreateSession (which spawns a fresh process resuming from the
+        // saved session_id). Without this the client is stuck emitting
+        // "session has exited" until they hit Clear.
+        if (activeBindGen === myGen) {
+          sessionPromise = null;
+          busy = false;
+          activeSessionKey = null;
+          unsubscribe?.();
+          unsubscribe = null;
+        }
+      }
+    };
+
     unsubscribe = session.subscribe(dispatch, sinceSeq);
     return session;
   };
@@ -228,9 +255,10 @@ wss.on('connection', (ws, req) => {
     console.log(`[ws#${wsId}] stale resume closed before init, retrying fresh`);
     try {
       const retrySession = await bindSession(getOrCreateSession({ cli: cliKind, repoPath }));
+      if (!retrySession) return false;  // superseded by a newer bind
       busy = true;
-      safeSend({ type: 'sessionRebound' });
-      safeSend({ type: 'turnStart' });
+      safeSend({ type: 'sessionRebound', sessionKey: retrySession.key });
+      safeSend({ type: 'turnStart', sessionKey: retrySession.key });
       if ('send' in retrySession) (retrySession as any).send(text, images);
       return true;
     } catch (e) {
@@ -261,6 +289,10 @@ wss.on('connection', (ws, req) => {
           getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
           sinceSeq,
         );
+        if (!session) {
+          // Superseded by a newer bind; that newer call will send `ready`.
+          return;
+        }
         // If we're attaching to a session that's mid-turn, tell the client so
         // its status flips to 'streaming' instead of stale 'ready'. Otherwise
         // a phone unlock during a long Sam turn looks like nothing's happening.
@@ -273,6 +305,7 @@ wss.on('connection', (ws, req) => {
           repo: msg.repo,
           latestSeq: session.latestSeq(),
           busy: sessionBusy,
+          sessionKey: session.key,
         });
       } catch (e) {
         console.error(`[ws#${wsId}] hello failed:`, (e as Error).message);
@@ -293,8 +326,9 @@ wss.on('connection', (ws, req) => {
         const session = await bindSession(
           getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
         );
+        if (!session) return;  // superseded; newer bind drives the next turn
         busy = true;
-        safeSend({ type: 'turnStart' });
+        safeSend({ type: 'turnStart', sessionKey: session.key });
         if ('send' in session) {
           if (msg.cli === 'codex') await (session as any).send(msg.text, msg.images);
           else {
@@ -321,6 +355,7 @@ wss.on('connection', (ws, req) => {
         cliKind = msg.cli;
         repoPath = msg.repo;
         sessionPromise = null;
+        activeSessionKey = null;
         unsubscribe?.();
         unsubscribe = null;
       } catch (e) {
@@ -335,10 +370,17 @@ wss.on('connection', (ws, req) => {
         const session = await bindSession(
           freshStart({ cli: msg.cli, repoPath: msg.repo }),
         );
+        if (!session) return;  // superseded; newer bind sends its own ready/freshStarted
         cliKind = msg.cli;
         repoPath = msg.repo;
         busy = false;
-        safeSend({ type: 'freshStarted', cli: msg.cli, repo: msg.repo, latestSeq: session.latestSeq() });
+        safeSend({
+          type: 'freshStarted',
+          cli: msg.cli,
+          repo: msg.repo,
+          latestSeq: session.latestSeq(),
+          sessionKey: session.key,
+        });
       } catch (e) {
         safeSend({ type: 'error', message: String((e as Error).message) });
       }
@@ -375,7 +417,7 @@ wss.on('connection', (ws, req) => {
       if (!busy) {
         turnGeneration += 1;
         busy = true;
-        safeSend({ type: 'turnStart' });
+        safeSend({ type: 'turnStart', sessionKey: activeSessionKey ?? undefined });
       }
       try {
         const session = await sessionPromise;

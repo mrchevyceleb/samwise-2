@@ -246,6 +246,13 @@ export function useChat(opts: {
   onInitialMessageSentRef.current = onInitialMessageSent;
   /** Latest event seq received from server. Sent on reconnect for replay. */
   const lastSeqRef = useRef(-1);
+  /** State mirror of lastSeqRef, used purely to trigger the persistence
+   *  effect so localStorage's seq stays in sync with blocks. Without this,
+   *  events that bump seq without changing blocks (turnEnd, ready, dedup'd
+   *  user_echo, result with usage, errors) leave persisted seq behind, and
+   *  on the next reload the server replays already-rendered events → every
+   *  line shows up twice. */
+  const [lastSeq, setLastSeq] = useState(-1);
   /** Key (`${cli}|${repoPath}`) of the conversation we've already restored from
    *  storage. Writes are gated on this so we don't wipe a saved chat with the
    *  empty initial state on the first render after repos load. */
@@ -260,7 +267,10 @@ export function useChat(opts: {
     }
   }, [initialMessage]);
 
-  // Save to localStorage whenever blocks change, so a refresh restores them.
+  // Save to localStorage whenever blocks OR lastSeq change. lastSeq must be
+  // a dep so seq advances are persisted even when the event didn't mutate
+  // blocks — see comment on `lastSeq` above for the duplicate-render bug
+  // this prevents.
   // CRITICAL: skip until the read-and-restore effect below has run for the
   // current (cli, repo) — otherwise the first render after repos resolve
   // writes blocks=[] over saved history before we get a chance to load it.
@@ -270,7 +280,7 @@ export function useChat(opts: {
     if (restoredKeyRef.current !== key) return;
     writeStoredBlocks(cli, repo.path, blocks, sessionId);
     writeStoredSeq(cli, repo.path, lastSeqRef.current, sessionId);
-  }, [blocks, repo?.path, cli, sessionId]);
+  }, [blocks, lastSeq, repo?.path, cli, sessionId]);
 
   useEffect(() => {
     if (!enabled || !repo) return;
@@ -283,10 +293,17 @@ export function useChat(opts: {
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
     // Sequence we've already seen (persisted) — replay only what's newer.
-    lastSeqRef.current = readStoredSeq(cli, repo.path, sessionId);
+    const restoredSeq = readStoredSeq(cli, repo.path, sessionId);
+    lastSeqRef.current = restoredSeq;
+    setLastSeq(restoredSeq);
     // Mark this conversation as restored so the persistence-write effect can
     // safely begin saving updates back to storage.
     restoredKeyRef.current = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+
+    // Bind the expected session key to THIS effect's (cli, repo) so the
+    // closure can validate every incoming message without latching state
+    // from a possibly-stale first event after a switch.
+    const expectedSessionKey = `${cli}|${repo.path}`;
 
     const connect = () => {
       if (teardownRef.current) return;
@@ -306,15 +323,34 @@ export function useChat(opts: {
         }));
       };
       ws.onmessage = (e) => {
+        // If the user switched (cli/repo/sessionId) and this is the previous
+        // socket finishing its message queue, drop everything — the new
+        // effect's WS owns the chat now.
+        if (ws !== wsRef.current) return;
         let msg: any;
         try { msg = JSON.parse(String(e.data)); }
         catch { return; }
+        // Cross-session bleed guard. If a message carries a sessionKey that
+        // doesn't match what we expect for this (cli, repo), drop it.
+        if (
+          typeof msg.sessionKey === 'string'
+          && msg.sessionKey !== expectedSessionKey
+        ) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[useChat] dropping cross-session message: expected ${expectedSessionKey}, got ${msg.sessionKey}`,
+            msg.type,
+          );
+          return;
+        }
         // Track every server event's sequence so reconnect can resume.
         if (typeof msg.seq === 'number' && msg.seq > lastSeqRef.current) {
           lastSeqRef.current = msg.seq;
+          setLastSeq(msg.seq);
         }
         if (typeof msg.latestSeq === 'number' && msg.latestSeq > lastSeqRef.current) {
           lastSeqRef.current = msg.latestSeq;
+          setLastSeq(msg.latestSeq);
         }
         if (msg.type === 'ready') {
           // If the server says we attached to a busy session (Sam is mid-turn
@@ -341,7 +377,11 @@ export function useChat(opts: {
           }
         }
         else if (msg.type === 'sessionRebound') {
+          // Server spawned a fresh process for the same (cli, cwd) — its
+          // session key is unchanged but the underlying process and seq
+          // numbering reset.
           lastSeqRef.current = 0;
+          setLastSeq(0);
           setError(null);
         }
         else if (msg.type === 'turnStart') {
@@ -361,6 +401,7 @@ export function useChat(opts: {
           setStatus('ready');
           turnIdRef.current = '';
           lastSeqRef.current = 0;
+          setLastSeq(0);
           if (repo) {
             writeStoredBlocks(cli, repo.path, [], sessionId);
             writeStoredSeq(cli, repo.path, 0, sessionId);

@@ -179,7 +179,9 @@ export default function App() {
     repoName: string;
     sessionId: string | null;
   }) => {
-    setActiveEventId(null);
+    // If this live session corresponds to a chronicle entry, keep both the
+    // live indicator and the chronicle row highlighted in sync.
+    setActiveEventId(s.sessionId ?? null);
     setForth({
       companion: s.cli,
       repo: repoForPath(s.cwd, s.repoName),
@@ -288,11 +290,15 @@ export default function App() {
     );
   }
 
+  const activeLiveKey =
+    view === 'conversation' && repo ? `${companion}|${repo.path}` : null;
+
   return (
     <div className={appClass} style={{ flexDirection: 'row' }}>
       <ChronicleRibbon
         events={chronicle.events}
         activeId={view === 'conversation' ? activeEventId : null}
+        activeLiveKey={activeLiveKey}
         collapsed={chronicleCollapsed}
         onToggleCollapsed={() => setChronicleCollapsed((v) => !v)}
         liveSessions={liveSessions}

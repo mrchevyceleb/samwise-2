@@ -18,6 +18,7 @@ const dotColor: Record<ChronicleEventKind, string> = {
 export function ChronicleRibbon({
   events,
   activeId,
+  activeLiveKey,
   collapsed = false,
   onSelect,
   onNew,
@@ -29,6 +30,10 @@ export function ChronicleRibbon({
 }: {
   events: ChronicleEvent[];
   activeId?: string | null;
+  /** `${cli}|${cwd}` of the currently-open chat, so the matching live entry
+   *  can be highlighted. Without this, every live entry looks identical and
+   *  switching between them gives no visual feedback. */
+  activeLiveKey?: string | null;
   collapsed?: boolean;
   onSelect?: (id: string) => void;
   onNew?: () => void;
@@ -134,9 +139,17 @@ export function ChronicleRibbon({
               · now ·
             </div>
           )}
-          {liveSessions.map((s) => (
+          {liveSessions.map((s) => {
+            const liveKey = `${s.cli}|${s.cwd}`;
+            const liveActive = liveKey === activeLiveKey;
+            const bg = liveActive
+              ? 'rgba(184,89,58,0.16)'
+              : s.busy
+                ? 'rgba(184,89,58,0.10)'
+                : 'transparent';
+            return (
             <div
-              key={`${s.cli}|${s.cwd}`}
+              key={liveKey}
               onClick={() => onSelectLive?.(s)}
               title={`${COMPANION_LABEL[s.cli]} · ${s.cwd}`}
               style={{
@@ -147,7 +160,11 @@ export function ChronicleRibbon({
                 marginBottom: 4,
                 borderRadius: 2,
                 cursor: 'pointer',
-                background: s.busy ? 'rgba(184,89,58,0.10)' : 'transparent',
+                background: bg,
+                borderLeft: liveActive
+                  ? '2px solid var(--ember)'
+                  : '2px solid transparent',
+                marginLeft: liveActive ? -2 : 0,
               }}
             >
               <span
@@ -204,7 +221,8 @@ export function ChronicleRibbon({
                 </span>
               )}
             </div>
-          ))}
+            );
+          })}
           <hr className="sw-rule-solid" style={{ margin: '8px 0 4px', opacity: 0.5 }} />
         </div>
       )}
