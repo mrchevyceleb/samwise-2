@@ -378,6 +378,7 @@ export function ChatInput({
   onSend,
   onSteer,
   onBack,
+  onFreshStart,
   commands = [],
   commandPrefix = '/',
   busy = false,
@@ -391,6 +392,7 @@ export function ChatInput({
   onSend?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onSteer?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onBack?: () => void;
+  onFreshStart?: () => void;
   commands?: CommandEntry[];
   commandPrefix?: string;
   busy?: boolean;
@@ -719,7 +721,7 @@ export function ChatInput({
           if (fileInputRef.current) fileInputRef.current.value = '';
         }}
       />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, rowGap: 8, flexWrap: 'wrap', marginTop: 8 }}>
         <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
           ↵ to send · ⇧↵ for new line
         </span>
@@ -739,6 +741,22 @@ export function ChatInput({
         >
           {commandText(commandPrefix, 'push')}
         </button>
+        {onFreshStart && (
+          <button
+            className="sw-btn"
+            style={{
+              fontSize: 13,
+              padding: '7px 12px',
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              color: 'var(--ink-soft)',
+            }}
+            onClick={onFreshStart}
+            title="start a fresh thread"
+          >
+            fresh thread
+          </button>
+        )}
         <span style={{ marginLeft: 'auto' }}></span>
         {acceptImages && (
           <button
