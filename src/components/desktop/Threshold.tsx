@@ -72,11 +72,17 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
     <div
       style={{
         flex: 1,
+        minHeight: 0,
+        overflowY: 'auto',
+      }}
+    >
+    <div
+      style={{
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        padding: '72px 48px 48px',
-        overflowY: 'auto',
+        padding: '48px 48px 48px',
+        minHeight: '100%',
       }}
     >
       {/* Sam himself + title block */}
@@ -376,6 +382,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
           <PillHub key={h.name} hub={h} />
         ))}
       </div>
+    </div>
     </div>
   );
 }
