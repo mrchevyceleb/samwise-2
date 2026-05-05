@@ -190,8 +190,18 @@ function writeStoredBlocks(
 ): void {
   if (typeof window === 'undefined') return;
   try {
-    // Cap stored blocks so localStorage doesn't grow unbounded.
-    const tail = blocks.slice(-200);
+    // Cap stored blocks so localStorage doesn't grow unbounded. Strip image
+    // base64 payloads from user blocks: thumbnails render from in-memory state
+    // during a session, but persisting hundreds of KB per screenshot quickly
+    // blows past the ~5MB localStorage quota and silently breaks all future
+    // writes (including non-image text blocks).
+    const tail = blocks.slice(-200).map((b) => {
+      if (b.kind === 'user' && b.images && b.images.length) {
+        const { images, ...rest } = b;
+        return rest;
+      }
+      return b;
+    });
     localStorage.setItem(blocksStorageKey(cli, repoPath, sessionId), JSON.stringify(tail));
   } catch {}
 }
@@ -469,7 +479,7 @@ export function useChat(opts: {
     const ws = wsRef.current;
     setBlocks((prev) => [
       ...prev,
-      { kind: 'user', id: id(), text, ts: Date.now() },
+      { kind: 'user', id: id(), text, ts: Date.now(), images },
     ]);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setError('Sam is not on the line. Please wait a moment.');
@@ -507,7 +517,7 @@ export function useChat(opts: {
     const ws = wsRef.current;
     setBlocks((prev) => [
       ...prev,
-      { kind: 'user', id: id(), text, ts: Date.now() },
+      { kind: 'user', id: id(), text, ts: Date.now(), images },
     ]);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setError('Sam is not on the line. Please wait a moment.');

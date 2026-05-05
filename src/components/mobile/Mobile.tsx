@@ -947,7 +947,7 @@ export function MobileConversation({
         {blocks.map((b) => {
           if (b.kind === 'user') {
             return (
-              <UserMessage key={b.id} time={timeLabel(b.ts)}>
+              <UserMessage key={b.id} time={timeLabel(b.ts)} images={b.images}>
                 {b.text}
               </UserMessage>
             );

@@ -71,7 +71,13 @@ export function SamMessage({
 export function UserMessage({
   children,
   time,
-}: { children: ReactNode; time?: string }) {
+  images,
+}: {
+  children: ReactNode;
+  time?: string;
+  images?: Array<{ mediaType: string; base64: string }>;
+}) {
+  const hasText = typeof children === 'string' ? children.trim().length > 0 : !!children;
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 22 }}>
       <div style={{ maxWidth: '85%' }}>
@@ -93,20 +99,57 @@ export function UserMessage({
             You
           </span>
         </div>
-        <div
-          style={{
-            background: 'var(--ink)',
-            color: 'var(--vellum)',
-            padding: '12px 16px',
-            borderRadius: 14,
-            fontFamily: 'var(--serif-body)',
-            fontSize: 19,
-            lineHeight: 1.55,
-            boxShadow: '0 1px 0 var(--shadow-warm)',
-          }}
-        >
-          {children}
-        </div>
+        {images && images.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 6,
+              flexWrap: 'wrap',
+              justifyContent: 'flex-end',
+              marginBottom: hasText ? 8 : 0,
+            }}
+          >
+            {images.map((img, i) => (
+              <a
+                key={i}
+                href={`data:${img.mediaType};base64,${img.base64}`}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  display: 'block',
+                  width: 96,
+                  height: 96,
+                  borderRadius: 6,
+                  overflow: 'hidden',
+                  border: '1px solid var(--rule-soft)',
+                  boxShadow: '0 1px 0 var(--shadow-warm)',
+                }}
+              >
+                <img
+                  src={`data:${img.mediaType};base64,${img.base64}`}
+                  alt="attached"
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                />
+              </a>
+            ))}
+          </div>
+        )}
+        {hasText && (
+          <div
+            style={{
+              background: 'var(--ink)',
+              color: 'var(--vellum)',
+              padding: '12px 16px',
+              borderRadius: 14,
+              fontFamily: 'var(--serif-body)',
+              fontSize: 19,
+              lineHeight: 1.55,
+              boxShadow: '0 1px 0 var(--shadow-warm)',
+            }}
+          >
+            {children}
+          </div>
+        )}
       </div>
     </div>
   );

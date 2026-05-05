@@ -43,7 +43,13 @@ export type CommandCatalog = {
 // `turnId` + `cbIndex` correlate a block back to claude's content_block_*
 // stream events so the reducer stays pure (no out-of-band Maps).
 export type ChatBlock =
-  | { kind: 'user'; id: string; text: string; ts: number }
+  | {
+      kind: 'user';
+      id: string;
+      text: string;
+      ts: number;
+      images?: Array<{ mediaType: string; base64: string }>;
+    }
   | {
       kind: 'text';
       id: string;
