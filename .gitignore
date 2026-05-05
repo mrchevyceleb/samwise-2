@@ -25,3 +25,14 @@ dist-ssr
 
 # Playwright MCP screenshot artifacts
 .playwright-mcp/
+
+# Secrets — never commit any of these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets.json
+credentials.json
+service-account.json
