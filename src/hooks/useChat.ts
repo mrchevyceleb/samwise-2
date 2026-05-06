@@ -327,6 +327,13 @@ export function useChat(opts: {
     // validate every incoming message without latching state from a
     // possibly-stale first event after a switch.
     const expectedSessionKey = `${cli}|${repo.path}`;
+    // Active session-id anchor for this effect's lifetime. Initialized from
+    // the chronicle anchor passed in via props; rotates when the server
+    // signals a legitimate session reset (`freshStarted`, `sessionRebound`)
+    // or surfaces a new id via `ready`. Used to drop events from a foreign
+    // tab that activated a different chronicle session for the same
+    // (cli, repo).
+    const activeSessionId = { current: sessionId ?? null };
 
     const connect = () => {
       if (teardownRef.current) return;
@@ -353,16 +360,81 @@ export function useChat(opts: {
         let msg: any;
         try { msg = JSON.parse(String(e.data)); }
         catch { return; }
-        // Cross-session bleed guard. If a message carries a sessionKey that
-        // doesn't match what we expect for this (cli, repo), drop it.
-        if (
+        // Cross-(cli, repo) bleed guard. Chat-affecting messages MUST carry
+        // a sessionKey matching this hook's expected (cli, repo). Anything
+        // missing or mismatched is dropped — closes the hole where
+        // turnStart/turnEnd could slip through unguarded.
+        const CHAT_AFFECTING = new Set([
+          'stream', 'turnStart', 'turnEnd', 'freshStarted',
+          'sessionRebound', 'ready', 'sessionClosed',
+        ]);
+        // Messages that AUTHORITATIVELY rotate the active session_id for
+        // THIS WS — `freshStarted` and `sessionRebound` are direct
+        // responses to this client's own actions (freshStart, stale-resume
+        // retry), so their new sessionId is ours by construction.
+        const ROTATES_ANCHOR = new Set(['freshStarted', 'sessionRebound']);
+        if (CHAT_AFFECTING.has(msg.type)) {
+          if (typeof msg.sessionKey !== 'string' || msg.sessionKey !== expectedSessionKey) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[useChat] dropping ${msg.type}: expected sessionKey ${expectedSessionKey}, got ${msg.sessionKey ?? 'undefined'}`,
+            );
+            return;
+          }
+          if (ROTATES_ANCHOR.has(msg.type)) {
+            if (typeof msg.sessionId === 'string') {
+              activeSessionId.current = msg.sessionId;
+            } else if (msg.sessionId === null) {
+              activeSessionId.current = null;
+            }
+          } else if (msg.type === 'ready') {
+            // `ready` latches the anchor on the FIRST bind (fresh live chat
+            // with no chronicle anchor). On a reconnect after another tab
+            // hijacked this (cli, repo) to a different session_id, the
+            // anchor is already set — fall through to the multi-tab guard
+            // below so we DON'T silently follow the foreign session.
+            if (activeSessionId.current == null && typeof msg.sessionId === 'string') {
+              activeSessionId.current = msg.sessionId;
+            } else if (
+              activeSessionId.current
+              && typeof msg.sessionId === 'string'
+              && msg.sessionId !== activeSessionId.current
+            ) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `[useChat] dropping ${msg.type}: expected sessionId ${activeSessionId.current}, got ${msg.sessionId}`,
+              );
+              setError('this conversation was opened in another window — refresh to resume');
+              setStatus('closed');
+              return;
+            }
+          } else if (
+            // Multi-tab guard. If this hook is anchored to a specific
+            // session_id and the server is now serving a DIFFERENT one for
+            // the same (cli, repo), drop the event and surface a clear
+            // error so the user knows the conversation moved elsewhere.
+            activeSessionId.current
+            && typeof msg.sessionId === 'string'
+            && msg.sessionId !== activeSessionId.current
+          ) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[useChat] dropping ${msg.type}: expected sessionId ${activeSessionId.current}, got ${msg.sessionId}`,
+            );
+            setError('this conversation was opened in another window — refresh to resume');
+            setStatus('closed');
+            return;
+          }
+        } else if (
+          // For non-chat-affecting messages (e.g. `error`), only drop on a
+          // present-but-mismatched sessionKey so pre-bind errors still reach
+          // the client.
           typeof msg.sessionKey === 'string'
           && msg.sessionKey !== expectedSessionKey
         ) {
           // eslint-disable-next-line no-console
           console.warn(
-            `[useChat] dropping cross-session message: expected ${expectedSessionKey}, got ${msg.sessionKey}`,
-            msg.type,
+            `[useChat] dropping cross-session ${msg.type}: expected ${expectedSessionKey}, got ${msg.sessionKey}`,
           );
           return;
         }

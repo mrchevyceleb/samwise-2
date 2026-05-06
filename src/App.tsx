@@ -78,7 +78,25 @@ export default function App() {
   const [chronicleTick, setChronicleTick] = useState(0);
   const chronicle = useChronicle(chronicleTick);
   const commands = useCommands();
-  const liveSessions = useLive();
+  const { sessions: liveSessions, removeLocal: removeLiveSession, refetch: refetchLive } = useLive();
+
+  const dismissLiveSession = async (s: { cli: string; cwd: string }) => {
+    // Optimistic remove first so the row disappears instantly, then POST.
+    // Refetch only after the POST resolves — refetching before would race
+    // the server (still showing the session) and undo the optimistic remove.
+    removeLiveSession(s.cli, s.cwd);
+    try {
+      await fetch('/api/session/dismiss', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cli: s.cli, cwd: s.cwd }),
+      });
+    } catch {
+      // Network blip — let the next regular poll reconcile.
+    } finally {
+      refetchLive();
+    }
+  };
 
   // Restore the last active conversation if there was one. We start in the
   // threshold view; once /api/repos resolves we bind the saved repoPath to
@@ -193,6 +211,9 @@ export default function App() {
     const ev = chronicle.events.find((e) => e.id === id);
     if (!ev) return;
     setActiveEventId(id);
+    // Drop any pending threshold-entered prompt — it belongs to whatever
+    // conversation the user typed it in, not this chronicle session.
+    setPendingFirstMessage(null);
 
     if (!ev.cwd) {
       setView('conversation');
@@ -250,6 +271,7 @@ export default function App() {
             onSelectLive={(s) => {
               openLiveSession(s);
             }}
+            onDismissLive={dismissLiveSession}
             theme={theme}
             onToggleTheme={toggleTheme}
           />
@@ -305,6 +327,7 @@ export default function App() {
         onSelectLive={(s) => {
           openLiveSession(s);
         }}
+        onDismissLive={dismissLiveSession}
         onSelect={(id) => {
           void openChronicleEvent(id);
         }}

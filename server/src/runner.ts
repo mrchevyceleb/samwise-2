@@ -40,6 +40,12 @@ const ASSISTANT_AGENT_PROMPT =
 // dozen turns before reconnecting; old events fall off the tail.
 const EVENT_BUFFER_SIZE = 2000;
 
+// A session with zero subscribers and no active turn for this long is killed
+// by the per-session idle timer (or, as a backstop, by the global reaper in
+// index.ts). 30 minutes lets a reasonable phone-lock-then-resume case still
+// reattach to the warm process; longer than that we give back the resources.
+export const IDLE_TTL_MS = 30 * 60 * 1000;
+
 export type SeqEvent = { seq: number; ev: SessionEvent };
 
 class ClaudeSession {
@@ -64,6 +70,9 @@ class ClaudeSession {
   private initSeen = false;
   private exitedBeforeInit = false;
   private startupWaiters = new Set<(state: 'initialized' | 'closed') => void>();
+  /** Self-expiring idle timer. Armed when subscriberCount drops to zero and
+   *  no turn is in flight; disarmed on activity or new subscribers. */
+  private idleTimer: NodeJS.Timeout | null = null;
   /** Resolves true once init is received, false if the process exits before init. */
   readonly ready: Promise<boolean>;
   private resolveReady!: (ok: boolean) => void;
@@ -139,6 +148,8 @@ class ClaudeSession {
    * "give me everything in the buffer."
    */
   subscribe(fn: (e: SeqEvent) => void, sinceSeq = -1, countSubscriber = true): () => void {
+    // A new live subscriber cancels any pending idle death.
+    if (countSubscriber) this.disarmIdleTimer();
     if (sinceSeq >= 0) {
       for (const se of this.eventLog) {
         if (se.seq > sinceSeq) fn(se);
@@ -153,7 +164,10 @@ class ClaudeSession {
       this.listeners.delete(fn);
       if (countSubscriber) {
         this.subscriberCount = Math.max(0, this.subscriberCount - 1);
-        if (this.subscriberCount === 0) this.lastActivityAtMs = Date.now();
+        if (this.subscriberCount === 0) {
+          this.lastActivityAtMs = Date.now();
+          this.armIdleTimer();
+        }
       }
     };
   }
@@ -215,12 +229,18 @@ class ClaudeSession {
 
   /** Tear down the underlying process. */
   shutdown(): void {
+    this.disarmIdleTimer();
     try { this.child.stdin.end(); } catch {}
     try { this.child.kill('SIGTERM'); } catch {}
   }
 
   /** Same as shutdown, but framed for the user's "stop" button — keeps the
-   *  saved session_id so the next message resumes the conversation. */
+   *  saved session_id so the next message resumes the conversation.
+   *  We deliberately do NOT clear listeners here: other tabs subscribed to
+   *  the same session need to receive the `closed` event the child's exit
+   *  handler emits, so they can drop their sessionPromise and rebind on
+   *  the next send. Per-subscribe `unsubscribe()` already removes any stale
+   *  listener owned by the rebinding socket itself. */
   interrupt(): void {
     this.emit({ type: 'event', event: { type: '_interrupted', ts: Date.now() } });
     this.shutdown();
@@ -286,7 +306,42 @@ class ClaudeSession {
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
     }
+    // Activity resets the idle clock. If no one's listening, immediately
+    // re-arm so an event-only session (background work nobody's watching)
+    // still expires on schedule.
+    this.disarmIdleTimer();
+    if (this.subscriberCount === 0) this.armIdleTimer();
     for (const fn of this.listeners) fn(se);
+  }
+
+  private armIdleTimer(): void {
+    if (this.idleTimer) return;
+    if (this.subscriberCount > 0 || this.isBusy()) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      this.idleExpire();
+    }, IDLE_TTL_MS);
+  }
+
+  private disarmIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  private idleExpire(): void {
+    if (this.subscriberCount > 0) return;
+    if (this.isBusy()) return;
+    if (Date.now() - this.lastActivityAtMs < IDLE_TTL_MS) {
+      // Activity squeezed in just before the timer fired — re-arm.
+      this.armIdleTimer();
+      return;
+    }
+    // Drop ourselves from the manager Map (only if we're still the registered
+    // entry — a fresh spawn could have replaced us) and shut down the child.
+    removeFromSessionMap(this.key, this);
+    this.shutdown();
   }
 
   private resolveStartupWaiters(state: 'initialized' | 'closed'): void {
@@ -353,6 +408,12 @@ const sessions = new Map<string, ClaudeSession>();
 
 function keyOf(cli: CliKind, cwd: string): string {
   return `${cli}|${cwd}`;
+}
+
+/** Used by ClaudeSession.idleExpire to evict itself. No-op if a different
+ *  session has since taken the key (e.g., a fresh spawn replaced us). */
+function removeFromSessionMap(key: string, expected: ClaudeSession): void {
+  if (sessions.get(key) === expected) sessions.delete(key);
 }
 
 // Returned by getOrCreateSession — common interface across both runners.
@@ -461,6 +522,8 @@ export async function freshStart(opts: { cli: CliKind; repoPath: string }): Prom
   const key = keyOf(opts.cli, cwd);
   const existing = sessions.get(key);
   if (existing) {
+    // Don't clear listeners — let the child's exit handler emit `closed` to
+    // any other tabs subscribed to this session so they rebind cleanly.
     existing.shutdown();
     sessions.delete(key);
   }
@@ -468,11 +531,18 @@ export async function freshStart(opts: { cli: CliKind; repoPath: string }): Prom
   return spawnSession(opts.cli, cwd, null, key);
 }
 
-export function dropSession(cli: CliKind, repoPath: string): void {
+export async function dropSession(cli: CliKind, repoPath: string): Promise<void> {
+  if (cli === 'codex') {
+    const { dropCodexSession } = await import('./codex-runner.ts');
+    dropCodexSession({ repoPath });
+    return;
+  }
   const cwd = cli === 'assistant' ? ASSISTANT_HUB_PATH : repoPath;
   const key = keyOf(cli, cwd);
   const s = sessions.get(key);
   if (s) {
+    // Don't clear listeners — other tabs need the `closed` event from the
+    // child's exit handler to drop their sessionPromise.
     s.shutdown();
     sessions.delete(key);
   }

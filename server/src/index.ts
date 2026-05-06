@@ -30,7 +30,10 @@ import { basename } from 'node:path';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = resolve(HERE, '..', '..', 'dist');
 const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
-const IDLE_REAPER_INTERVAL_MS = 60 * 1000;
+// Backstop reaper. Per-session self-expiry timers (runner.ts/codex-runner.ts)
+// are the primary cleanup mechanism; this catches any session that somehow
+// slips its timer (process state corruption, etc.).
+const IDLE_REAPER_INTERVAL_MS = 30 * 1000;
 const RESUME_STARTUP_WATCH_MS = 8000;
 
 await ensureStateDir();
@@ -104,8 +107,26 @@ app.post('/api/session/activate', async (req, res) => {
     const active = activeClaudeSessions().find(
       (s) => s.cli === cli && s.cwd === cwd && s.sessionId === sessionId,
     );
-    if (!active) dropSession(cli, cwd);
+    if (!active) await dropSession(cli, cwd);
     await setSessionId(cli, cwd, sessionId);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+// Manual "dismiss" — kills the warm process for a (cli, cwd) pair so it stops
+// showing on the awake-now strip. The saved session_id is preserved so the
+// next rejoin from chronicle picks the conversation back up.
+app.post('/api/session/dismiss', async (req, res) => {
+  const cli = req.body?.cli as CliKind | undefined;
+  const cwd = typeof req.body?.cwd === 'string' ? req.body.cwd : '';
+  if (!cli || !cwd) {
+    res.status(400).json({ error: 'cli and cwd required' });
+    return;
+  }
+  try {
+    await dropSession(cli, cwd);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
@@ -178,10 +199,16 @@ wss.on('connection', (ws, req) => {
   let bindGen = 0;
   let activeBindGen = 0;
   let activeSessionKey: string | null = null;
+  let activeSession: AnySession | null = null;
 
   const safeSend = (msg: object) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
   };
+
+  /** The canonical session_id for whatever session is currently bound to
+   *  this WS, or null if none. Read fresh on every send so we pick up the
+   *  id once init arrives mid-turn. */
+  const currentSessionId = (): string | null => activeSession?.sessionId() ?? null;
 
   // Bind to a session and subscribe this WebSocket to its event stream.
   // Returns null when a newer bindSession call has superseded this one
@@ -204,33 +231,36 @@ wss.on('connection', (ws, req) => {
     activeBindGen = myGen;
     const sessionKey = session.key;
     activeSessionKey = sessionKey;
+    activeSession = session;
 
     const dispatch = (se: { seq: number; ev: any }) => {
       // Defensive: if a newer binding has taken over since this listener was
       // attached but unsubscribe hasn't run yet, drop the event.
       if (activeBindGen !== myGen) return;
       const sev = se.ev;
+      const sessionId = session.sessionId();
       if (sev.type === 'event') {
-        safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey });
+        safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey, sessionId });
       } else if (sev.type === 'turnEnd') {
         busy = false;
-        safeSend({ type: 'turnEnd', sessionId: sev.sessionId, seq: se.seq, sessionKey });
+        safeSend({ type: 'turnEnd', sessionId: sev.sessionId ?? sessionId, seq: se.seq, sessionKey });
       } else if (sev.type === 'error') {
-        safeSend({ type: 'error', message: sev.message, seq: se.seq, sessionKey });
+        safeSend({ type: 'error', message: sev.message, seq: se.seq, sessionKey, sessionId });
       } else if (sev.type === 'closed') {
-        safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq, sessionKey });
-        // The CLI process is dead. Drop the stale promise + subscription so
-        // the next `send` hits the recovery branch and rebinds via
-        // getOrCreateSession (which spawns a fresh process resuming from the
-        // saved session_id). Without this the client is stuck emitting
-        // "session has exited" until they hit Clear.
-        if (activeBindGen === myGen) {
-          sessionPromise = null;
-          busy = false;
-          activeSessionKey = null;
-          unsubscribe?.();
-          unsubscribe = null;
-        }
+        // Suppress the closed event entirely if a newer bindSession is in
+        // flight (or already won). The new bind's freshStarted/ready owns the
+        // user's view, and clearing sessionPromise here would null out the
+        // *new* promise that line 214 just installed. Pre-existing latent
+        // race for claude (child exits asynchronously after SIGTERM); now
+        // also exercised by codex since CodexSession.shutdown emits closed.
+        if (bindGen !== myGen) return;
+        safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq, sessionKey, sessionId });
+        sessionPromise = null;
+        busy = false;
+        activeSessionKey = null;
+        activeSession = null;
+        unsubscribe?.();
+        unsubscribe = null;
       }
     };
 
@@ -257,15 +287,21 @@ wss.on('connection', (ws, req) => {
       const retrySession = await bindSession(getOrCreateSession({ cli: cliKind, repoPath }));
       if (!retrySession) return false;  // superseded by a newer bind
       busy = true;
-      safeSend({ type: 'sessionRebound', sessionKey: retrySession.key });
-      safeSend({ type: 'turnStart', sessionKey: retrySession.key });
+      const retrySid = retrySession.sessionId();
+      safeSend({ type: 'sessionRebound', sessionKey: retrySession.key, sessionId: retrySid });
+      safeSend({ type: 'turnStart', sessionKey: retrySession.key, sessionId: retrySid });
       if ('send' in retrySession) (retrySession as any).send(text, images);
       return true;
     } catch (e) {
       console.warn(`[ws#${wsId}] stale resume retry failed:`, (e as Error).message);
       busy = false;
       safeSend({ type: 'error', message: String((e as Error).message) });
-      safeSend({ type: 'turnEnd' });
+      // turnEnd needs a sessionKey to pass the frontend bleed guard. If we
+      // have no active session here, there's no chat-affecting turnEnd to
+      // emit — the client will see the error and recover.
+      if (activeSessionKey) {
+        safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId() });
+      }
       return false;
     }
   };
@@ -306,6 +342,7 @@ wss.on('connection', (ws, req) => {
           latestSeq: session.latestSeq(),
           busy: sessionBusy,
           sessionKey: session.key,
+          sessionId: session.sessionId(),
         });
       } catch (e) {
         console.error(`[ws#${wsId}] hello failed:`, (e as Error).message);
@@ -328,7 +365,7 @@ wss.on('connection', (ws, req) => {
         );
         if (!session) return;  // superseded; newer bind drives the next turn
         busy = true;
-        safeSend({ type: 'turnStart', sessionKey: session.key });
+        safeSend({ type: 'turnStart', sessionKey: session.key, sessionId: session.sessionId() });
         if ('send' in session) {
           if (msg.cli === 'codex') await (session as any).send(msg.text, msg.images);
           else {
@@ -340,7 +377,9 @@ wss.on('connection', (ws, req) => {
         console.error(`[ws#${wsId}] steer failed:`, (e as Error).message);
         busy = false;
         safeSend({ type: 'error', message: String((e as Error).message) });
-        safeSend({ type: 'turnEnd' });
+        if (activeSessionKey) {
+          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId() });
+        }
       }
       return;
     }
@@ -349,13 +388,21 @@ wss.on('connection', (ws, req) => {
       console.log(`[ws#${wsId}] stop cli=${msg.cli} repo=${msg.repo}`);
       try {
         turnGeneration += 1;
+        // Snapshot the active key/sessionId BEFORE we tear down so the
+        // turnEnd we emit carries them and the frontend's bleed guard lets it
+        // through.
+        const stopKey = activeSessionKey;
+        const stopSid = currentSessionId();
         await interruptSession({ cli: msg.cli, repoPath: msg.repo });
         busy = false;
-        safeSend({ type: 'turnEnd' });
+        if (stopKey) {
+          safeSend({ type: 'turnEnd', sessionKey: stopKey, sessionId: stopSid });
+        }
         cliKind = msg.cli;
         repoPath = msg.repo;
         sessionPromise = null;
         activeSessionKey = null;
+        activeSession = null;
         unsubscribe?.();
         unsubscribe = null;
       } catch (e) {
@@ -380,6 +427,7 @@ wss.on('connection', (ws, req) => {
           repo: msg.repo,
           latestSeq: session.latestSeq(),
           sessionKey: session.key,
+          sessionId: session.sessionId(),
         });
       } catch (e) {
         safeSend({ type: 'error', message: String((e as Error).message) });
@@ -417,7 +465,24 @@ wss.on('connection', (ws, req) => {
       if (!busy) {
         turnGeneration += 1;
         busy = true;
-        safeSend({ type: 'turnStart', sessionKey: activeSessionKey ?? undefined });
+        // Resolve the session NOW (it may still be spawning) so we can tag
+        // turnStart with its real key + sessionId. Without these, the
+        // frontend's bleed guard correctly drops the message.
+        try {
+          const sessionForStart = await sessionPromise;
+          activeSession = sessionForStart;
+          activeSessionKey = sessionForStart.key;
+          safeSend({
+            type: 'turnStart',
+            sessionKey: sessionForStart.key,
+            sessionId: sessionForStart.sessionId(),
+          });
+        } catch (e) {
+          console.error(`[ws#${wsId}] turnStart failed:`, (e as Error).message);
+          busy = false;
+          safeSend({ type: 'error', message: String((e as Error).message) });
+          return;
+        }
       }
       try {
         const session = await sessionPromise;
@@ -434,7 +499,9 @@ wss.on('connection', (ws, req) => {
         console.error(`[ws#${wsId}] send failed:`, (e as Error).message);
         busy = false;
         safeSend({ type: 'error', message: String((e as Error).message) });
-        safeSend({ type: 'turnEnd' });
+        if (activeSessionKey) {
+          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId() });
+        }
       }
       return;
     }
@@ -461,7 +528,9 @@ const idleReaper = setInterval(() => {
     + pruneIdleCodexSessions(IDLE_SESSION_TTL_MS, now);
   if (pruned > 0) console.log(`[idle-reaper] pruned ${pruned} idle session(s)`);
 }, IDLE_REAPER_INTERVAL_MS);
-idleReaper.unref();
+// Note: deliberately NOT calling idleReaper.unref() — we want this timer to
+// drive cleanup reliably. The SIGINT/SIGTERM tearDown handler clears the
+// interval explicitly so the process can still exit on signal.
 
 const tearDown = () => {
   clearInterval(idleReaper);

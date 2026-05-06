@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
+import { IDLE_TTL_MS } from './runner.ts';
 import { getSessionId, setSessionId } from './sessions.ts';
 
 const EVENT_BUFFER_SIZE = 2000;
@@ -55,6 +56,8 @@ export class CodexSession {
   private eventLog: SeqEvent[] = [];
   private nextSeq = 1;
   private lastActivityAtMs = Date.now();
+  /** Self-expiring idle timer. Mirrors ClaudeSession.idleTimer. */
+  private idleTimer: NodeJS.Timeout | null = null;
   /** Codex doesn't need a warmup turn — ready immediately. */
   readonly ready: Promise<boolean> = Promise.resolve(true);
 
@@ -65,6 +68,7 @@ export class CodexSession {
   }
 
   subscribe(fn: Listener, sinceSeq = -1, countSubscriber = true): () => void {
+    if (countSubscriber) this.disarmIdleTimer();
     if (sinceSeq >= 0) {
       for (const se of this.eventLog) {
         if (se.seq > sinceSeq) fn(se);
@@ -79,7 +83,10 @@ export class CodexSession {
       this.listeners.delete(fn);
       if (countSubscriber) {
         this.subscriberCount = Math.max(0, this.subscriberCount - 1);
-        if (this.subscriberCount === 0) this.lastActivityAtMs = Date.now();
+        if (this.subscriberCount === 0) {
+          this.lastActivityAtMs = Date.now();
+          this.armIdleTimer();
+        }
       }
     };
   }
@@ -109,10 +116,26 @@ export class CodexSession {
   }
 
   shutdown(): void {
+    if (this.dead) return;
     this.dead = true;
+    this.disarmIdleTimer();
     if (this.currentChild) {
       try { this.currentChild.kill('SIGTERM'); } catch {}
     }
+    // Notify subscribers so the WS layer drops its sessionPromise and rebinds
+    // on the next user send. Mirrors ClaudeSession's child-exit-driven closed
+    // event; codex has no persistent child to hook, so we emit it explicitly.
+    // We must emit BEFORE discardListeners so the WS layer still receives the
+    // closed notification.
+    this.emit({ type: 'closed', code: null, signal: 'SIGTERM' });
+    this.discardListeners();
+  }
+
+  /** Discard all listeners. Mirrors ClaudeSession.discardListeners — used
+   *  to prevent late event leaks when this session is being torn down and a
+   *  new one will replace it for the same key. */
+  discardListeners(): void {
+    this.listeners.clear();
   }
 
   async send(text: string, images?: ChatImage[]): Promise<void> {
@@ -220,16 +243,23 @@ export class CodexSession {
 
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
-      // Codex prints a few benign lines on startup (e.g. "Reading additional
-      // input from stdin...") and a "thread X not found" rollout warning when
-      // resuming. Filter those, surface only the lines that look like real
+      // Codex emits two kinds of stderr: real errors (spawn/panic) and its own
+      // structured tracing logs (`<ts>Z LEVEL module::path: ...`). The tracing
+      // lines are internal debug output — most notably a `write_stdin failed`
+      // ERROR every time codex's first exec_command lacks tty=true (which it
+      // immediately retries on its own). Filter all tracing-format lines and
+      // a couple of known benign warnings; surface only true unstructured
       // errors.
-      const text = chunk.trim();
-      if (!text) return;
-      if (/Reading additional input from stdin/i.test(text)) return;
-      if (/failed to record rollout items/i.test(text)) return;
-      stderrChunks.push(text);
-      this.emit({ type: 'error', message: text });
+      const tracingLine = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+[\w_]+(?:::[\w_]+)*:/;
+      for (const raw of chunk.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        if (/Reading additional input from stdin/i.test(line)) continue;
+        if (/failed to record rollout items/i.test(line)) continue;
+        if (tracingLine.test(line)) continue;
+        stderrChunks.push(line);
+        this.emit({ type: 'error', message: line });
+      }
     });
 
     let settled = false;
@@ -276,7 +306,37 @@ export class CodexSession {
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
     }
+    this.disarmIdleTimer();
+    if (this.subscriberCount === 0 && !this.dead) this.armIdleTimer();
     for (const fn of this.listeners) fn(se);
+  }
+
+  private armIdleTimer(): void {
+    if (this.idleTimer || this.dead) return;
+    if (this.subscriberCount > 0 || this.busy) return;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      this.idleExpire();
+    }, IDLE_TTL_MS);
+  }
+
+  private disarmIdleTimer(): void {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+  }
+
+  private idleExpire(): void {
+    if (this.dead) return;
+    if (this.subscriberCount > 0) return;
+    if (this.busy) return;
+    if (Date.now() - this.lastActivityAtMs < IDLE_TTL_MS) {
+      this.armIdleTimer();
+      return;
+    }
+    removeFromCodexMap(this.key, this);
+    this.shutdown();
   }
 
   /** Forward an event already in claude stream-json shape. */
@@ -435,6 +495,12 @@ export class CodexSession {
 /** Manager keyed by cwd — same semantics as the claude session map. */
 const codexSessions = new Map<string, CodexSession>();
 
+/** Used by CodexSession.idleExpire to evict itself. No-op if a different
+ *  session has since taken the key. */
+function removeFromCodexMap(key: string, expected: CodexSession): void {
+  if (codexSessions.get(key) === expected) codexSessions.delete(key);
+}
+
 export function activeCodexSessions(): {
   cli: CliKind;
   cwd: string;
@@ -483,6 +549,18 @@ export function shutdownAllCodexSessions(): void {
 
 /** Kill the in-flight codex child but keep the thread id saved for resume. */
 export function interruptCodex(opts: { repoPath: string }): void {
+  const cwd = opts.repoPath;
+  const key = `codex|${cwd}`;
+  const s = codexSessions.get(key);
+  if (s) {
+    s.shutdown();
+    codexSessions.delete(key);
+  }
+}
+
+/** Drop the warm codex child but keep the saved thread id so the next click
+ *  resumes the conversation. Used by the user's manual "dismiss" button. */
+export function dropCodexSession(opts: { repoPath: string }): void {
   const cwd = opts.repoPath;
   const key = `codex|${cwd}`;
   const s = codexSessions.get(key);
