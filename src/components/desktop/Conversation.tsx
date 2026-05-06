@@ -299,6 +299,7 @@ export function Conversation({
             onSteer={onSteer}
             onBack={onBack}
             onFreshStart={onFreshStart}
+            onStop={onStop}
             commands={commands}
             commandPrefix={commandPrefix}
             busy={status === 'streaming'}

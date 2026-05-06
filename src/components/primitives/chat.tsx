@@ -422,6 +422,7 @@ export function ChatInput({
   onSteer,
   onBack,
   onFreshStart,
+  onStop,
   commands = [],
   commandPrefix = '/',
   busy = false,
@@ -436,6 +437,7 @@ export function ChatInput({
   onSteer?: (v: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onBack?: () => void;
   onFreshStart?: () => void;
+  onStop?: () => void;
   commands?: CommandEntry[];
   commandPrefix?: string;
   busy?: boolean;
@@ -801,6 +803,16 @@ export function ChatInput({
           </button>
         )}
         <span style={{ marginLeft: 'auto' }}></span>
+        {busy && onStop && (
+          <button
+            className="sw-btn sw-btn-ember"
+            style={{ fontSize: 14, padding: '8px 14px' }}
+            onClick={onStop}
+            title="stop the in-flight turn (next message will resume the conversation)"
+          >
+            Stop
+          </button>
+        )}
         {acceptImages && (
           <button
             className="sw-btn"
