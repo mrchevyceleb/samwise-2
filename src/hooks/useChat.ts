@@ -239,7 +239,16 @@ export function useChat(opts: {
   onInitialMessageSent?: () => void;
 }) {
   const { repo, cli, enabled, initialMessage, sessionId, onInitialMessageSent } = opts;
-  const [blocks, setBlocks] = useState<ChatBlock[]>([]);
+  // Blocks and the conversation key they belong to live in a single state
+  // value so they always update atomically. A previous bug stored the key in
+  // a ref that was updated synchronously while blocks were updated via
+  // setState (deferred): a render in that gap let the persistence effect
+  // observe new-key + old-blocks and write one chat's prompts into another
+  // chat's localStorage entry.
+  const [chat, setChat] = useState<{ key: string | null; blocks: ChatBlock[] }>(
+    { key: null, blocks: [] },
+  );
+  const blocks = chat.blocks;
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(null);
@@ -263,10 +272,6 @@ export function useChat(opts: {
    *  on the next reload the server replays already-rendered events → every
    *  line shows up twice. */
   const [lastSeq, setLastSeq] = useState(-1);
-  /** Key (`${cli}|${repoPath}`) of the conversation we've already restored from
-   *  storage. Writes are gated on this so we don't wipe a saved chat with the
-   *  empty initial state on the first render after repos load. */
-  const restoredKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (initialMessage) {
@@ -281,38 +286,46 @@ export function useChat(opts: {
   // a dep so seq advances are persisted even when the event didn't mutate
   // blocks — see comment on `lastSeq` above for the duplicate-render bug
   // this prevents.
-  // CRITICAL: skip until the read-and-restore effect below has run for the
-  // current (cli, repo) — otherwise the first render after repos resolve
-  // writes blocks=[] over saved history before we get a chance to load it.
+  // CRITICAL: only write when chat.key matches the current (cli, repo,
+  // sessionId). This guards two cases at once:
+  // 1. First render after repos resolve — chat.key is null so we don't
+  //    overwrite saved history with an empty initial state.
+  // 2. Mid-switch render where new (cli, repo) has landed but chat.blocks
+  //    still reference the previous conversation. chat.key still says
+  //    "previous" so we skip until setChat({ key: new, blocks: stored })
+  //    lands atomically in the connect effect.
   useEffect(() => {
     if (!repo) return;
     const key = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
-    if (restoredKeyRef.current !== key) return;
-    writeStoredBlocks(cli, repo.path, blocks, sessionId);
+    if (chat.key !== key) return;
+    writeStoredBlocks(cli, repo.path, chat.blocks, sessionId);
     writeStoredSeq(cli, repo.path, lastSeqRef.current, sessionId);
-  }, [blocks, lastSeq, repo?.path, cli, sessionId]);
+  }, [chat, lastSeq, repo?.path, cli, sessionId]);
 
   useEffect(() => {
     if (!enabled || !repo) return;
 
     teardownRef.current = false;
+    // Conversation identity for this effect's lifetime. setChat updates that
+    // mutate blocks must guard on prev.key === expectedKey, so a stream event
+    // from a prior conversation can never append into the wrong chat.
+    const expectedKey = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
     // Restore prior blocks from localStorage so a page reload doesn't wipe
-    // the chat. Server replay then fills in events newer than what we have.
+    // the chat. Atomically pair them with the owning key so the persistence
+    // effect's guard can never observe new-key + old-blocks.
     const stored = readStoredBlocks(cli, repo.path, sessionId);
-    setBlocks(stored);
+    setChat({ key: expectedKey, blocks: stored });
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
     // Sequence we've already seen (persisted) — replay only what's newer.
     const restoredSeq = readStoredSeq(cli, repo.path, sessionId);
     lastSeqRef.current = restoredSeq;
     setLastSeq(restoredSeq);
-    // Mark this conversation as restored so the persistence-write effect can
-    // safely begin saving updates back to storage.
-    restoredKeyRef.current = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
 
-    // Bind the expected session key to THIS effect's (cli, repo) so the
-    // closure can validate every incoming message without latching state
-    // from a possibly-stale first event after a switch.
+    // Bind the expected session key (no sessionId — server doesn't tag
+    // messages with it) to THIS effect's (cli, repo) so the closure can
+    // validate every incoming message without latching state from a
+    // possibly-stale first event after a switch.
     const expectedSessionKey = `${cli}|${repo.path}`;
 
     const connect = () => {
@@ -375,13 +388,17 @@ export function useChat(opts: {
           const pending = initialMessageRef.current;
           if (pending && !initialSendInFlightRef.current && ws.readyState === WebSocket.OPEN) {
             initialSendInFlightRef.current = true;
-            setBlocks((prev) => {
-              const lastUser = [...prev].reverse().find((b) => b.kind === 'user');
+            setChat((prev) => {
+              if (prev.key !== expectedKey) return prev;
+              const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
               if (lastUser && lastUser.kind === 'user' && lastUser.text === pending) return prev;
-              return [
-                ...prev,
-                { kind: 'user', id: id(), text: pending, ts: Date.now() },
-              ];
+              return {
+                key: prev.key,
+                blocks: [
+                  ...prev.blocks,
+                  { kind: 'user', id: id(), text: pending, ts: Date.now() },
+                ],
+              };
             });
             ws.send(JSON.stringify({ type: 'send', text: pending }));
           }
@@ -405,7 +422,9 @@ export function useChat(opts: {
         }
         else if (msg.type === 'turnEnd') setStatus('ready');
         else if (msg.type === 'freshStarted') {
-          setBlocks([]);
+          setChat((prev) =>
+            prev.key !== expectedKey ? prev : { key: prev.key, blocks: [] },
+          );
           setUsage(null);
           setError(null);
           setStatus('ready');
@@ -422,7 +441,11 @@ export function useChat(opts: {
           setStatus('closed');
         }
         else if (msg.type === 'stream') {
-          setBlocks((prev) => reduce(prev, msg.event, turnIdRef));
+          setChat((prev) =>
+            prev.key !== expectedKey
+              ? prev
+              : { key: prev.key, blocks: reduce(prev.blocks, msg.event, turnIdRef) },
+          );
           // Track usage from claude's `result` events to power the context meter.
           if (msg.event?.type === 'result' && msg.event?.usage) {
             const u = msg.event.usage as Record<string, number | undefined>;
@@ -476,11 +499,19 @@ export function useChat(opts: {
     text: string,
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
+    if (!repo) return;
     const ws = wsRef.current;
-    setBlocks((prev) => [
-      ...prev,
-      { kind: 'user', id: id(), text, ts: Date.now(), images },
-    ]);
+    const expectedKey = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+    setChat((prev) => {
+      if (prev.key !== expectedKey) return prev;
+      return {
+        key: prev.key,
+        blocks: [
+          ...prev.blocks,
+          { kind: 'user', id: id(), text, ts: Date.now(), images },
+        ],
+      };
+    });
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setError('Sam is not on the line. Please wait a moment.');
       return;
@@ -515,10 +546,17 @@ export function useChat(opts: {
   ) => {
     if (!repo) return;
     const ws = wsRef.current;
-    setBlocks((prev) => [
-      ...prev,
-      { kind: 'user', id: id(), text, ts: Date.now(), images },
-    ]);
+    const expectedKey = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+    setChat((prev) => {
+      if (prev.key !== expectedKey) return prev;
+      return {
+        key: prev.key,
+        blocks: [
+          ...prev.blocks,
+          { kind: 'user', id: id(), text, ts: Date.now(), images },
+        ],
+      };
+    });
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setError('Sam is not on the line. Please wait a moment.');
       return;
