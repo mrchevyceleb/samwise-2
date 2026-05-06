@@ -26,6 +26,7 @@ export function ChronicleRibbon({
   onToggleTheme,
   liveSessions = [],
   onSelectLive,
+  onDismissLive,
   onToggleCollapsed,
 }: {
   events: ChronicleEvent[];
@@ -41,6 +42,7 @@ export function ChronicleRibbon({
   onToggleTheme?: () => void;
   liveSessions?: LiveSession[];
   onSelectLive?: (s: LiveSession) => void;
+  onDismissLive?: (s: LiveSession) => void;
   onToggleCollapsed?: () => void;
 }) {
   const wide = !collapsed;
@@ -207,6 +209,32 @@ export function ChronicleRibbon({
                     {COMPANION_LABEL[s.cli]}{s.busy ? ' · tending' : ' · idle'}
                   </div>
                 </div>
+              )}
+              {wide && onDismissLive && !s.busy && (
+                <button
+                  type="button"
+                  aria-label="dismiss session"
+                  title="dismiss (kills the warm process, chronicle keeps the thread)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDismissLive(s);
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--ink-faint)',
+                    fontSize: 16,
+                    lineHeight: 1,
+                    padding: '4px 6px',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                    opacity: 0.7,
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = '1'; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.opacity = '0.7'; }}
+                >
+                  ×
+                </button>
               )}
               {!wide && (
                 <span

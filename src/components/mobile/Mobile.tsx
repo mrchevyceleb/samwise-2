@@ -156,6 +156,7 @@ export function MobileThreshold({
   onSetForth,
   liveSessions = [],
   onSelectLive,
+  onDismissLive,
   theme = 'light',
   onToggleTheme,
 }: {
@@ -168,6 +169,7 @@ export function MobileThreshold({
   }) => void;
   liveSessions?: LiveSession[];
   onSelectLive?: (s: LiveSession) => void;
+  onDismissLive?: (s: LiveSession) => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
 }) {
@@ -382,6 +384,29 @@ export function MobileThreshold({
                   {COMPANION_LABEL[s.cli]}{s.busy ? ' · tending' : ' · idle'}
                 </div>
               </div>
+              {onDismissLive && !s.busy && (
+                <button
+                  type="button"
+                  aria-label="dismiss session"
+                  title="dismiss (kills the warm process, chronicle keeps the thread)"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDismissLive(s);
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--ink-faint)',
+                    fontSize: 18,
+                    lineHeight: 1,
+                    padding: '6px 8px',
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  ×
+                </button>
+              )}
               <span
                 className="sw-folio"
                 style={{
