@@ -4,11 +4,11 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { PORT } from './config.ts';
+import { ASSISTANT_HUB_PATH, PORT } from './config.ts';
 import { discoverRepos, gitBranch } from './repos.ts';
 import { readChronicle } from './chronicle.ts';
 import { readCommands } from './commands.ts';
-import { ensureStateDir, setSessionId } from './sessions.ts';
+import { ensureStateDir, getPlanMode, setSessionId } from './sessions.ts';
 import {
   getOrCreateSession,
   freshStart,
@@ -17,6 +17,8 @@ import {
   shutdownAllSessions,
   activeClaudeSessions,
   pruneIdleClaudeSessions,
+  respondToToolForSession,
+  setPlanModeForSession,
   type AnySession,
   type CliKind,
 } from './runner.ts';
@@ -35,6 +37,15 @@ const IDLE_SESSION_TTL_MS = 30 * 60 * 1000;
 // slips its timer (process state corruption, etc.).
 const IDLE_REAPER_INTERVAL_MS = 30 * 1000;
 const RESUME_STARTUP_WATCH_MS = 8000;
+const DEFAULT_CHAT_ID = 'main';
+
+function normalizeChatId(value: unknown): string {
+  if (typeof value !== 'string') return DEFAULT_CHAT_ID;
+  const trimmed = value.trim();
+  if (!trimmed) return DEFAULT_CHAT_ID;
+  const safe = trimmed.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  return safe || DEFAULT_CHAT_ID;
+}
 
 await ensureStateDir();
 
@@ -75,6 +86,7 @@ app.get('/api/live', (_req, res) => {
       cli: s.cli,
       cwd: s.cwd,
       repoName: basename(s.cwd),
+      chatId: s.chatId,
       busy: s.busy,
       sessionId: s.sessionId,
       lastActivityAt: s.lastActivityAt,
@@ -95,6 +107,7 @@ app.post('/api/session/activate', async (req, res) => {
   const cli = req.body?.cli as CliKind | undefined;
   const cwd = typeof req.body?.cwd === 'string' ? req.body.cwd : '';
   const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId : '';
+  const chatId = normalizeChatId(req.body?.chatId);
   if (!cli || !cwd || !sessionId) {
     res.status(400).json({ error: 'cli, cwd, and sessionId required' });
     return;
@@ -104,12 +117,26 @@ app.post('/api/session/activate', async (req, res) => {
     return;
   }
   try {
-    const active = activeClaudeSessions().find(
+    // Match warm sessions by (cli, cwd, sessionId) regardless of chatId. If
+    // the user clicks a chronicle row for a session that's already warm under
+    // a different chatId (most commonly the same repo's `main` live chat), we
+    // need to kill that warm process — otherwise the next ws bind spawns a
+    // second `claude --resume <sessionId>` and we end up with two agents
+    // running tools against the same conversation/worktree.
+    const matches = activeClaudeSessions().filter(
       (s) => s.cli === cli && s.cwd === cwd && s.sessionId === sessionId,
     );
-    if (!active) await dropSession(cli, cwd);
-    await setSessionId(cli, cwd, sessionId);
-    res.json({ ok: true });
+    const exactMatch = matches.find(
+      (s) => (s.chatId || DEFAULT_CHAT_ID) === chatId,
+    );
+    if (!exactMatch) {
+      for (const stale of matches) {
+        await dropSession(cli, cwd, stale.chatId || DEFAULT_CHAT_ID);
+      }
+      await dropSession(cli, cwd, chatId);
+    }
+    await setSessionId(cli, cwd, sessionId, chatId);
+    res.json({ ok: true, chatId });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }
@@ -121,13 +148,14 @@ app.post('/api/session/activate', async (req, res) => {
 app.post('/api/session/dismiss', async (req, res) => {
   const cli = req.body?.cli as CliKind | undefined;
   const cwd = typeof req.body?.cwd === 'string' ? req.body.cwd : '';
+  const chatId = normalizeChatId(req.body?.chatId);
   if (!cli || !cwd) {
     res.status(400).json({ error: 'cli and cwd required' });
     return;
   }
   try {
-    await dropSession(cli, cwd);
-    res.json({ ok: true });
+    await dropSession(cli, cwd, chatId);
+    res.json({ ok: true, chatId });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }
@@ -155,22 +183,52 @@ if (existsSync(STATIC_DIR)) {
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/api/ws' });
 
-type ClientHello = { type: 'hello'; cli: CliKind; repo: string; sinceSeq?: number };
+type ClientHello = {
+  type: 'hello';
+  cli: CliKind;
+  repo: string;
+  chatId?: string;
+  sinceSeq?: number;
+};
 type ClientSend = {
   type: 'send';
+  chatId?: string;
   text: string;
   images?: Array<{ mediaType: string; base64: string }>;
 };
-type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string };
-type ClientStop = { type: 'stop'; cli: CliKind; repo: string };
+type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string; chatId?: string };
+type ClientStop = { type: 'stop'; cli: CliKind; repo: string; chatId?: string };
 type ClientSteer = {
   type: 'steer';
   cli: CliKind;
   repo: string;
+  chatId?: string;
   text: string;
   images?: Array<{ mediaType: string; base64: string }>;
 };
-type ClientMsg = ClientHello | ClientSend | ClientFresh | ClientStop | ClientSteer;
+type ClientToolResponse = {
+  type: 'toolResponse';
+  cli: CliKind;
+  repo: string;
+  chatId?: string;
+  toolUseId: string;
+  content: string;
+};
+type ClientSetPlanMode = {
+  type: 'setPlanMode';
+  cli: CliKind;
+  repo: string;
+  chatId?: string;
+  enabled: boolean;
+};
+type ClientMsg =
+  | ClientHello
+  | ClientSend
+  | ClientFresh
+  | ClientStop
+  | ClientSteer
+  | ClientToolResponse
+  | ClientSetPlanMode;
 
 type ResumeWatchableSession = AnySession & {
   startedWithResume?: () => boolean;
@@ -191,6 +249,7 @@ wss.on('connection', (ws, req) => {
   let busy = false;
   let cliKind: CliKind | null = null;
   let repoPath: string | null = null;
+  let chatId = DEFAULT_CHAT_ID;
   let turnGeneration = 0;
   // Monotonic generation for bindSession. The latest call always wins
   // regardless of resolve order — fixes a race where two overlapping binds
@@ -240,12 +299,22 @@ wss.on('connection', (ws, req) => {
       const sev = se.ev;
       const sessionId = session.sessionId();
       if (sev.type === 'event') {
-        safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey, sessionId });
+        safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey, sessionId, chatId });
       } else if (sev.type === 'turnEnd') {
         busy = false;
-        safeSend({ type: 'turnEnd', sessionId: sev.sessionId ?? sessionId, seq: se.seq, sessionKey });
+        safeSend({
+          type: 'turnEnd',
+          sessionId: sev.sessionId ?? sessionId,
+          seq: se.seq,
+          sessionKey,
+          chatId,
+        });
       } else if (sev.type === 'error') {
-        safeSend({ type: 'error', message: sev.message, seq: se.seq, sessionKey, sessionId });
+        if (busy) {
+          safeSend({ type: 'error', message: sev.message, seq: se.seq, sessionKey, sessionId, chatId });
+        } else {
+          console.log(`[ws#${wsId}] swallowed idle stderr: ${String(sev.message).slice(0, 200)}`);
+        }
       } else if (sev.type === 'closed') {
         // Suppress the closed event entirely if a newer bindSession is in
         // flight (or already won). The new bind's freshStarted/ready owns the
@@ -254,7 +323,11 @@ wss.on('connection', (ws, req) => {
         // race for claude (child exits asynchronously after SIGTERM); now
         // also exercised by codex since CodexSession.shutdown emits closed.
         if (bindGen !== myGen) return;
-        safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq, sessionKey, sessionId });
+        if (busy) {
+          safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq, sessionKey, sessionId, chatId });
+        } else {
+          console.log(`[ws#${wsId}] swallowed idle session close (code=${sev.code})`);
+        }
         sessionPromise = null;
         busy = false;
         activeSessionKey = null;
@@ -284,12 +357,12 @@ wss.on('connection', (ws, req) => {
 
     console.log(`[ws#${wsId}] stale resume closed before init, retrying fresh`);
     try {
-      const retrySession = await bindSession(getOrCreateSession({ cli: cliKind, repoPath }));
+      const retrySession = await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
       if (!retrySession) return false;  // superseded by a newer bind
       busy = true;
       const retrySid = retrySession.sessionId();
-      safeSend({ type: 'sessionRebound', sessionKey: retrySession.key, sessionId: retrySid });
-      safeSend({ type: 'turnStart', sessionKey: retrySession.key, sessionId: retrySid });
+      safeSend({ type: 'sessionRebound', sessionKey: retrySession.key, sessionId: retrySid, chatId });
+      safeSend({ type: 'turnStart', sessionKey: retrySession.key, sessionId: retrySid, chatId });
       if ('send' in retrySession) (retrySession as any).send(text, images);
       return true;
     } catch (e) {
@@ -300,7 +373,7 @@ wss.on('connection', (ws, req) => {
       // have no active session here, there's no chat-affecting turnEnd to
       // emit — the client will see the error and recover.
       if (activeSessionKey) {
-        safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId() });
+        safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId(), chatId });
       }
       return false;
     }
@@ -318,11 +391,12 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'hello') {
       cliKind = msg.cli;
       repoPath = msg.repo;
+      chatId = normalizeChatId(msg.chatId);
       const sinceSeq = typeof msg.sinceSeq === 'number' ? msg.sinceSeq : -1;
-      console.log(`[ws#${wsId}] hello cli=${msg.cli} repo=${msg.repo} sinceSeq=${sinceSeq}`);
+      console.log(`[ws#${wsId}] hello cli=${msg.cli} repo=${msg.repo} chatId=${chatId} sinceSeq=${sinceSeq}`);
       try {
         const session = await bindSession(
-          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
+          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo, chatId }),
           sinceSeq,
         );
         if (!session) {
@@ -334,15 +408,19 @@ wss.on('connection', (ws, req) => {
         // a phone unlock during a long Sam turn looks like nothing's happening.
         const sessionBusy = (session as any).isBusy?.() === true;
         if (sessionBusy) busy = true;
-        console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()} busy=${sessionBusy}`);
+        const cwdForPlan = msg.cli === 'assistant' ? ASSISTANT_HUB_PATH : msg.repo;
+        const planMode = await getPlanMode(msg.cli, cwdForPlan, chatId);
+        console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()} busy=${sessionBusy} plan=${planMode}`);
         safeSend({
           type: 'ready',
           cli: msg.cli,
           repo: msg.repo,
+          chatId,
           latestSeq: session.latestSeq(),
           busy: sessionBusy,
           sessionKey: session.key,
           sessionId: session.sessionId(),
+          planMode,
         });
       } catch (e) {
         console.error(`[ws#${wsId}] hello failed:`, (e as Error).message);
@@ -356,16 +434,17 @@ wss.on('connection', (ws, req) => {
       console.log(`[ws#${wsId}] steer cli=${msg.cli} bytes=${msg.text.length}`);
       try {
         turnGeneration += 1;
-        await interruptSession({ cli: msg.cli, repoPath: msg.repo });
+        chatId = normalizeChatId(msg.chatId ?? chatId);
+        await interruptSession({ cli: msg.cli, repoPath: msg.repo, chatId });
         cliKind = msg.cli;
         repoPath = msg.repo;
         // Spin up a fresh session immediately and fire the new prompt at it.
         const session = await bindSession(
-          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo }),
+          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo, chatId }),
         );
         if (!session) return;  // superseded; newer bind drives the next turn
         busy = true;
-        safeSend({ type: 'turnStart', sessionKey: session.key, sessionId: session.sessionId() });
+        safeSend({ type: 'turnStart', sessionKey: session.key, sessionId: session.sessionId(), chatId });
         if ('send' in session) {
           if (msg.cli === 'codex') await (session as any).send(msg.text, msg.images);
           else {
@@ -378,7 +457,7 @@ wss.on('connection', (ws, req) => {
         busy = false;
         safeSend({ type: 'error', message: String((e as Error).message) });
         if (activeSessionKey) {
-          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId() });
+          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId(), chatId });
         }
       }
       return;
@@ -388,15 +467,16 @@ wss.on('connection', (ws, req) => {
       console.log(`[ws#${wsId}] stop cli=${msg.cli} repo=${msg.repo}`);
       try {
         turnGeneration += 1;
+        chatId = normalizeChatId(msg.chatId ?? chatId);
         // Snapshot the active key/sessionId BEFORE we tear down so the
         // turnEnd we emit carries them and the frontend's bleed guard lets it
         // through.
         const stopKey = activeSessionKey;
         const stopSid = currentSessionId();
-        await interruptSession({ cli: msg.cli, repoPath: msg.repo });
+        await interruptSession({ cli: msg.cli, repoPath: msg.repo, chatId });
         busy = false;
         if (stopKey) {
-          safeSend({ type: 'turnEnd', sessionKey: stopKey, sessionId: stopSid });
+          safeSend({ type: 'turnEnd', sessionKey: stopKey, sessionId: stopSid, chatId });
         }
         cliKind = msg.cli;
         repoPath = msg.repo;
@@ -414,8 +494,9 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'freshStart') {
       try {
         turnGeneration += 1;
+        chatId = normalizeChatId(msg.chatId ?? chatId);
         const session = await bindSession(
-          freshStart({ cli: msg.cli, repoPath: msg.repo }),
+          freshStart({ cli: msg.cli, repoPath: msg.repo, chatId }),
         );
         if (!session) return;  // superseded; newer bind sends its own ready/freshStarted
         cliKind = msg.cli;
@@ -425,6 +506,7 @@ wss.on('connection', (ws, req) => {
           type: 'freshStarted',
           cli: msg.cli,
           repo: msg.repo,
+          chatId,
           latestSeq: session.latestSeq(),
           sessionKey: session.key,
           sessionId: session.sessionId(),
@@ -435,23 +517,82 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (msg.type === 'toolResponse') {
+      console.log(`[ws#${wsId}] toolResponse cli=${msg.cli} toolUseId=${msg.toolUseId.slice(0, 8)}…`);
+      try {
+        chatId = normalizeChatId(msg.chatId ?? chatId);
+        await respondToToolForSession({
+          cli: msg.cli,
+          repoPath: msg.repo,
+          chatId,
+          toolUseId: msg.toolUseId,
+          content: msg.content,
+        });
+      } catch (e) {
+        console.warn(`[ws#${wsId}] toolResponse failed:`, (e as Error).message);
+        safeSend({ type: 'error', message: String((e as Error).message) });
+      }
+      return;
+    }
+
+    if (msg.type === 'setPlanMode') {
+      console.log(`[ws#${wsId}] setPlanMode cli=${msg.cli} repo=${msg.repo} enabled=${msg.enabled}`);
+      // Don't allow toggling mid-turn — plan mode is a spawn-time arg, so a
+      // recycle would orphan the in-flight turn. Frontend disables the toggle
+      // while streaming; this is the server-side belt.
+      if (busy) {
+        safeSend({ type: 'error', message: 'finish or stop the current turn before changing plan mode' });
+        return;
+      }
+      try {
+        chatId = normalizeChatId(msg.chatId ?? chatId);
+        await setPlanModeForSession({
+          cli: msg.cli,
+          repoPath: msg.repo,
+          chatId,
+          enabled: msg.enabled,
+        });
+        // The recycle path inside setPlanModeForSession may have shut down our
+        // warm session. Drop the cached promise so the next send rebinds with
+        // the new flag. (The session's `closed` event will also clear it via
+        // the dispatch handler — this is the belt to that suspenders.)
+        sessionPromise = null;
+        activeSessionKey = null;
+        activeSession = null;
+        unsubscribe?.();
+        unsubscribe = null;
+        const cwdForPlan = msg.cli === 'assistant' ? ASSISTANT_HUB_PATH : msg.repo;
+        const planMode = await getPlanMode(msg.cli, cwdForPlan, chatId);
+        safeSend({ type: 'planModeChanged', cli: msg.cli, repo: msg.repo, chatId, planMode });
+      } catch (e) {
+        console.warn(`[ws#${wsId}] setPlanMode failed:`, (e as Error).message);
+        safeSend({ type: 'error', message: String((e as Error).message) });
+      }
+      return;
+    }
+
     if (msg.type === 'send') {
       const imageCount = msg.images?.length ?? 0;
       console.log(`[ws#${wsId}] send cli=${cliKind} bytes=${msg.text.length} images=${imageCount}`);
+      const requestedChatId = normalizeChatId(msg.chatId ?? chatId);
+      if (requestedChatId !== chatId) {
+        safeSend({ type: 'error', message: 'chat changed, reconnect before sending' });
+        return;
+      }
       // If the session promise was nulled (e.g., right after a stop where
       // bindSession failed, or after an early error), try to recover from
       // the last hello's cli + repo instead of leaving the user stuck.
       if (!sessionPromise && cliKind && repoPath) {
         console.log(`[ws#${wsId}] send: rebinding session for recovery`);
         try {
-          await bindSession(getOrCreateSession({ cli: cliKind, repoPath }));
+          await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
         } catch (e) {
           console.warn(`[ws#${wsId}] send rebind failed:`, (e as Error).message);
         }
       }
       if (!sessionPromise) {
         console.warn(`[ws#${wsId}] send rejected: no session`);
-        safeSend({ type: 'error', message: 'no session — send hello first' });
+        safeSend({ type: 'error', message: 'no session, send hello first' });
         return;
       }
       // Codex is spawn-per-turn, so block mid-turn sends (would orphan the
@@ -459,7 +600,7 @@ wss.on('connection', (ws, req) => {
       // steer messages, so we let them through even while a turn is in flight.
       if (busy && cliKind === 'codex') {
         console.warn(`[ws#${wsId}] send rejected: codex busy`);
-        safeSend({ type: 'error', message: 'codex is on a turn — wait for the result' });
+        safeSend({ type: 'error', message: 'codex is on a turn, wait for the result' });
         return;
       }
       if (!busy) {
@@ -476,6 +617,7 @@ wss.on('connection', (ws, req) => {
             type: 'turnStart',
             sessionKey: sessionForStart.key,
             sessionId: sessionForStart.sessionId(),
+            chatId,
           });
         } catch (e) {
           console.error(`[ws#${wsId}] turnStart failed:`, (e as Error).message);
@@ -500,7 +642,7 @@ wss.on('connection', (ws, req) => {
         busy = false;
         safeSend({ type: 'error', message: String((e as Error).message) });
         if (activeSessionKey) {
-          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId() });
+          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId(), chatId });
         }
       }
       return;

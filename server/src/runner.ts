@@ -2,8 +2,14 @@ import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import { ASSISTANT_HUB_PATH } from './config.ts';
-import { getSessionId, setSessionId } from './sessions.ts';
+import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
 import { CodexSession, getOrCreateCodexSession } from './codex-runner.ts';
+import {
+  appendEventLog,
+  clearEventLog,
+  compactEventLog,
+  loadEventLogSync,
+} from './event-log-store.ts';
 
 // One persistent `claude` process per (cli, repoPath) pair, fed JSON over
 // stdin and reading JSONL events from stdout. This kills the per-turn startup
@@ -52,12 +58,17 @@ class ClaudeSession {
   readonly key: string;
   readonly cli: CliKind;
   readonly cwd: string;
+  readonly chatId: string;
+  /** Whether this process was spawned with --permission-mode plan. Spawn-time
+   *  arg, so toggling requires a recycle. */
+  readonly planMode: boolean;
   private child: ChildProcessByStdio<Writable, Readable, Readable>;
   private stdoutBuf = '';
   private listeners = new Set<(e: SeqEvent) => void>();
   private subscriberCount = 0;
   /** Rolling tail of recent events (with sequence numbers) for reconnect replay. */
   private eventLog: SeqEvent[] = [];
+  private mirrorEvents = true;
   private nextSeq = 1;
   private lastActivityAtMs = Date.now();
   /** session_id we asked the CLI to resume (cleared once the init event arrives). */
@@ -77,13 +88,35 @@ class ClaudeSession {
   readonly ready: Promise<boolean>;
   private resolveReady!: (ok: boolean) => void;
 
-  constructor(cli: CliKind, cwd: string, resumeId: string | null) {
+  constructor(
+    cli: CliKind,
+    cwd: string,
+    chatId: string,
+    resumeId: string | null,
+    planMode: boolean,
+  ) {
     this.cli = cli;
     this.cwd = cwd;
-    this.key = `${cli}|${cwd}`;
+    this.chatId = chatId;
+    this.key = keyOf(cli, cwd, chatId);
     this.pendingResumeId = resumeId;
     this.startedResumeId = resumeId;
+    this.planMode = planMode;
     this.ready = new Promise<boolean>((res) => { this.resolveReady = res; });
+
+    try {
+      const restored = loadEventLogSync(this.key);
+      if (restored.events.length > 0) {
+        this.eventLog = restored.events;
+        this.nextSeq = restored.nextSeq;
+        console.log(
+          `[${cli}] restored ${restored.events.length} event(s) for ${this.key} (nextSeq=${this.nextSeq})`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[${cli}] event-log restore failed for ${this.key}:`, (err as Error).message);
+    }
+    void compactEventLog(this.key);
 
     // Quiet-ready: the modern claude binary doesn't emit system/init until it
     // receives its first stdin message. Per Banana IDE: if the process is
@@ -95,13 +128,18 @@ class ClaudeSession {
       }
     }, 2000).unref();
 
+    // Plan mode and skip-permissions are mutually exclusive. In plan mode the
+    // CLI restricts the model to read-only tools and ExitPlanMode; the user
+    // approves the plan via tool_result before the model can act.
     const args: string[] = [
       '-p',
       '--input-format', 'stream-json',
       '--output-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
-      '--dangerously-skip-permissions',
+      ...(planMode
+        ? ['--permission-mode', 'plan']
+        : ['--dangerously-skip-permissions']),
     ];
     if (resumeId) args.push('--resume', resumeId);
     if (cli === 'assistant') args.push('--append-system-prompt', ASSISTANT_AGENT_PROMPT);
@@ -125,7 +163,7 @@ class ClaudeSession {
     this.child.on('exit', (code, signal) => {
       if (!this.initSeen) {
         this.exitedBeforeInit = true;
-        if (this.pendingResumeId) void setSessionId(this.cli, this.cwd, '');
+        if (this.pendingResumeId) void setSessionId(this.cli, this.cwd, '', this.chatId);
         this.resolveReady(false);
         this.resolveStartupWaiters('closed');
       }
@@ -227,11 +265,58 @@ class ClaudeSession {
     }
   }
 
+  /** Reply to a tool the model is waiting on (AskUserQuestion, ExitPlanMode,
+   *  any other interactive tool that needs a tool_result to advance the turn).
+   *  We keep this separate from `send` because tool_result is part of the
+   *  current turn — emitting an echo would render it as a fresh user message.
+   *  The plan-mode toolUseId pairs with claude's own ExitPlanMode emission;
+   *  AskUserQuestion pairs with whichever id the model assigned. */
+  respondToTool(toolUseId: string, content: string): void {
+    if (this.child.exitCode !== null) {
+      this.emit({ type: 'error', message: 'session has exited' });
+      return;
+    }
+    const payload = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: toolUseId,
+            content: [{ type: 'text', text: content }],
+          },
+        ],
+      },
+    });
+    try {
+      this.child.stdin.write(payload + '\n');
+      // Surface a synthetic echo so the chat shows what the user answered.
+      // Marked as a tool reply so the reducer doesn't render a duplicate user
+      // bubble — the answer card already shows the choice inline.
+      this.emit({
+        type: 'event',
+        event: {
+          type: '_tool_response',
+          toolUseId,
+          content,
+          ts: Date.now(),
+        },
+      });
+    } catch (e) {
+      this.emit({ type: 'error', message: `tool_result write failed: ${(e as Error).message}` });
+    }
+  }
+
   /** Tear down the underlying process. */
   shutdown(): void {
     this.disarmIdleTimer();
     try { this.child.stdin.end(); } catch {}
     try { this.child.kill('SIGTERM'); } catch {}
+  }
+
+  detachEventLog(): void {
+    this.mirrorEvents = false;
   }
 
   /** Same as shutdown, but framed for the user's "stop" button — keeps the
@@ -306,6 +391,7 @@ class ClaudeSession {
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
     }
+    if (this.mirrorEvents) appendEventLog(this.key, se);
     // Activity resets the idle clock. If no one's listening, immediately
     // re-arm so an event-only session (background work nobody's watching)
     // still expires on schedule.
@@ -381,7 +467,7 @@ class ClaudeSession {
         });
       }
       this.currentSessionId = ev.session_id;
-      void setSessionId(this.cli, this.cwd, ev.session_id);
+      void setSessionId(this.cli, this.cwd, ev.session_id, this.chatId);
     }
 
     // Track session_id from any event that carries it (some events carry it
@@ -389,7 +475,7 @@ class ClaudeSession {
     if (ev && typeof ev === 'object' && typeof ev.session_id === 'string'
         && ev.session_id !== this.currentSessionId) {
       this.currentSessionId = ev.session_id;
-      void setSessionId(this.cli, this.cwd, ev.session_id);
+      void setSessionId(this.cli, this.cwd, ev.session_id, this.chatId);
     }
 
     this.emit({ type: 'event', event: ev });
@@ -406,8 +492,9 @@ class ClaudeSession {
 
 const sessions = new Map<string, ClaudeSession>();
 
-function keyOf(cli: CliKind, cwd: string): string {
-  return `${cli}|${cwd}`;
+function keyOf(cli: CliKind, cwd: string, chatId = 'main'): string {
+  const normalized = chatId || 'main';
+  return normalized === 'main' ? `${cli}|${cwd}` : `${cli}|${cwd}|${normalized}`;
 }
 
 /** Used by ClaudeSession.idleExpire to evict itself. No-op if a different
@@ -422,30 +509,41 @@ export type AnySession = ClaudeSession | CodexSession;
 export async function getOrCreateSession(opts: {
   cli: CliKind;
   repoPath: string;
+  chatId?: string;
 }): Promise<AnySession> {
+  const chatId = opts.chatId || 'main';
   if (opts.cli === 'codex') {
-    return getOrCreateCodexSession({ repoPath: opts.repoPath });
+    return getOrCreateCodexSession({ repoPath: opts.repoPath, chatId });
   }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
-  const key = keyOf(opts.cli, cwd);
+  const key = keyOf(opts.cli, cwd, chatId);
+  const planMode = await getPlanMode(opts.cli, cwd, chatId);
 
   const existing = sessions.get(key);
-  if (existing && existing.isAlive()) return existing;
-  if (existing) sessions.delete(key);
+  // If a warm session is alive but its plan-mode flag doesn't match what
+  // we want, recycle it. The session_id is preserved in storage so the new
+  // process resumes the same conversation — just with different spawn args.
+  if (existing && existing.isAlive() && existing.planMode === planMode) return existing;
+  if (existing) {
+    existing.shutdown();
+    sessions.delete(key);
+  }
 
-  const resumeId = (await getSessionId(opts.cli, cwd)) ?? null;
-  const session = await spawnSession(opts.cli, cwd, resumeId, key);
+  const resumeId = (await getSessionId(opts.cli, cwd, chatId)) ?? null;
+  const session = await spawnSession(opts.cli, cwd, chatId, resumeId, key, planMode);
   return session;
 }
 
 async function spawnSession(
   cli: CliKind,
   cwd: string,
+  chatId: string,
   resumeId: string | null,
   key: string,
+  planMode: boolean,
   attempt = 0,
 ): Promise<ClaudeSession> {
-  const session = new ClaudeSession(cli, cwd, resumeId);
+  const session = new ClaudeSession(cli, cwd, chatId, resumeId, planMode);
   sessions.set(key, session);
 
   session.subscribe((se) => {
@@ -461,8 +559,8 @@ async function spawnSession(
     // --resume. Only one retry — if even a fresh spawn dies before init,
     // something else is wrong.
     if (resumeId && attempt === 0) {
-      await setSessionId(cli, cwd, ''); // clear the bad id
-      return spawnSession(cli, cwd, null, key, attempt + 1);
+      await setSessionId(cli, cwd, '', chatId); // clear the bad id
+      return spawnSession(cli, cwd, chatId, null, key, planMode, attempt + 1);
     }
     throw new Error('claude exited before initializing — check the CLI install or auth');
   }
@@ -477,6 +575,7 @@ export function shutdownAllSessions(): void {
 export type LiveSession = {
   cli: CliKind;
   cwd: string;
+  chatId: string;
   busy: boolean;
   sessionId: string | null;
   /** ms since epoch of the most recent event (or spawn time if no events yet). */
@@ -489,6 +588,7 @@ export function activeClaudeSessions(): LiveSession[] {
     out.push({
       cli: s.cli,
       cwd: s.cwd,
+      chatId: s.chatId,
       busy: s.isBusy(),
       sessionId: s.sessionId(),
       lastActivityAt: s.lastActivityAt(),
@@ -513,32 +613,40 @@ export function pruneIdleClaudeSessions(ttlMs: number, now = Date.now()): number
 // Drop the warm process AND the stored session id so the next spawn starts a
 // fresh thread. Picks up any `claude update` you've run since the process
 // last spawned.
-export async function freshStart(opts: { cli: CliKind; repoPath: string }): Promise<AnySession> {
+export async function freshStart(opts: {
+  cli: CliKind;
+  repoPath: string;
+  chatId?: string;
+}): Promise<AnySession> {
+  const chatId = opts.chatId || 'main';
   if (opts.cli === 'codex') {
     const { freshStartCodex } = await import('./codex-runner.ts');
-    return freshStartCodex({ repoPath: opts.repoPath });
+    return freshStartCodex({ repoPath: opts.repoPath, chatId });
   }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
-  const key = keyOf(opts.cli, cwd);
+  const key = keyOf(opts.cli, cwd, chatId);
+  const planMode = await getPlanMode(opts.cli, cwd, chatId);
   const existing = sessions.get(key);
   if (existing) {
     // Don't clear listeners — let the child's exit handler emit `closed` to
     // any other tabs subscribed to this session so they rebind cleanly.
+    existing.detachEventLog();
     existing.shutdown();
     sessions.delete(key);
   }
-  await setSessionId(opts.cli, cwd, ''); // drop the stored id so we don't --resume
-  return spawnSession(opts.cli, cwd, null, key);
+  await clearEventLog(key);
+  await setSessionId(opts.cli, cwd, '', chatId); // drop the stored id so we don't --resume
+  return spawnSession(opts.cli, cwd, chatId, null, key, planMode);
 }
 
-export async function dropSession(cli: CliKind, repoPath: string): Promise<void> {
+export async function dropSession(cli: CliKind, repoPath: string, chatId = 'main'): Promise<void> {
   if (cli === 'codex') {
     const { dropCodexSession } = await import('./codex-runner.ts');
-    dropCodexSession({ repoPath });
+    dropCodexSession({ repoPath, chatId });
     return;
   }
   const cwd = cli === 'assistant' ? ASSISTANT_HUB_PATH : repoPath;
-  const key = keyOf(cli, cwd);
+  const key = keyOf(cli, cwd, chatId);
   const s = sessions.get(key);
   if (s) {
     // Don't clear listeners — other tabs need the `closed` event from the
@@ -548,16 +656,70 @@ export async function dropSession(cli: CliKind, repoPath: string): Promise<void>
   }
 }
 
-/** Interrupt the in-flight turn for this (cli, repo) pair. Preserves the
- *  saved session_id so the next message resumes the conversation. */
-export async function interruptSession(opts: { cli: CliKind; repoPath: string }): Promise<void> {
+/** Toggle plan mode for a (cli, repo, chatId) and recycle the warm process if
+ *  the flag changed. The persisted session_id stays put — the next send will
+ *  resume the same conversation, but with the new spawn args (Claude flips
+ *  between `--permission-mode plan` and `--dangerously-skip-permissions`;
+ *  Codex flips between read-only sandbox and bypass). */
+export async function setPlanModeForSession(opts: {
+  cli: CliKind;
+  repoPath: string;
+  chatId?: string;
+  enabled: boolean;
+}): Promise<void> {
+  const chatId = opts.chatId || 'main';
   if (opts.cli === 'codex') {
-    const { interruptCodex } = await import('./codex-runner.ts');
-    interruptCodex({ repoPath: opts.repoPath });
+    const { setCodexPlanMode } = await import('./codex-runner.ts');
+    await setCodexPlanMode({ repoPath: opts.repoPath, chatId, enabled: opts.enabled });
     return;
   }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
-  const key = keyOf(opts.cli, cwd);
+  const key = keyOf(opts.cli, cwd, chatId);
+  await setPlanMode(opts.cli, cwd, opts.enabled, chatId);
+  const existing = sessions.get(key);
+  if (existing && existing.planMode !== opts.enabled) {
+    existing.shutdown();
+    sessions.delete(key);
+  }
+}
+
+/** Forward a tool_result into the in-flight turn for this (cli, repo, chatId).
+ *  Used by the UI's answer cards for AskUserQuestion / ExitPlanMode. Codex
+ *  doesn't have these tools (it's spawn-per-turn), so the codex path is a
+ *  no-op error. */
+export async function respondToToolForSession(opts: {
+  cli: CliKind;
+  repoPath: string;
+  chatId?: string;
+  toolUseId: string;
+  content: string;
+}): Promise<void> {
+  const chatId = opts.chatId || 'main';
+  if (opts.cli === 'codex') {
+    throw new Error('codex tools do not accept inline replies');
+  }
+  const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
+  const key = keyOf(opts.cli, cwd, chatId);
+  const session = sessions.get(key);
+  if (!session) throw new Error('no warm session to reply to');
+  session.respondToTool(opts.toolUseId, opts.content);
+}
+
+/** Interrupt the in-flight turn for this (cli, repo) pair. Preserves the
+ *  saved session_id so the next message resumes the conversation. */
+export async function interruptSession(opts: {
+  cli: CliKind;
+  repoPath: string;
+  chatId?: string;
+}): Promise<void> {
+  const chatId = opts.chatId || 'main';
+  if (opts.cli === 'codex') {
+    const { interruptCodex } = await import('./codex-runner.ts');
+    interruptCodex({ repoPath: opts.repoPath, chatId });
+    return;
+  }
+  const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
+  const key = keyOf(opts.cli, cwd, chatId);
   const s = sessions.get(key);
   if (s) {
     s.interrupt();

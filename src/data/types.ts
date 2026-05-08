@@ -8,6 +8,7 @@ export type LiveSession = {
   cli: CompanionId;
   cwd: string;
   repoName: string;
+  chatId?: string | null;
   busy: boolean;
   sessionId: string | null;
   lastActivityAt: number;
@@ -72,4 +73,11 @@ export type ChatBlock =
       turnId?: string;
       cbIndex?: number;
       open?: boolean;
+      /** True once the user has responded to (or the model has resolved) an
+       *  interactive tool like AskUserQuestion or ExitPlanMode. The answer
+       *  card collapses to a short summary when set. */
+      answered?: boolean;
+      /** The text the user sent back as the tool_result for an interactive
+       *  tool. Populated optimistically when the answer card submits. */
+      answer?: string;
     };

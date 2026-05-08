@@ -4,8 +4,10 @@ import {
   SamMessage,
   UserMessage,
   ToolCall,
+  InteractiveToolCard,
 } from '../primitives/chat';
 import { Markdown } from '../primitives/Markdown';
+import { isInteractiveTool } from '../../hooks/useChat';
 import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
 function timeLabel(ts: number): string {
@@ -333,7 +335,7 @@ export function MobileThreshold({
           </div>
           {liveSessions.map((s) => (
             <div
-              key={`${s.cli}|${s.cwd}`}
+              key={`${s.cli}|${s.cwd}|${s.chatId || 'main'}`}
               onClick={() => onSelectLive?.(s)}
               style={{
                 padding: '10px 14px',
@@ -656,6 +658,9 @@ export function MobileConversation({
   onSteer,
   onFreshStart,
   onStop,
+  onAnswerTool,
+  onTogglePlanMode,
+  planMode = false,
   acceptImages = true,
 }: {
   agent?: string;
@@ -673,6 +678,9 @@ export function MobileConversation({
   onSteer?: (message: string, images?: Array<{ mediaType: string; base64: string }>) => void;
   onFreshStart?: () => void;
   onStop?: () => void;
+  onAnswerTool?: (toolUseId: string, content: string) => void;
+  onTogglePlanMode?: (enabled: boolean) => void;
+  planMode?: boolean | null;
   acceptImages?: boolean;
 }) {
   const [draft, setDraft] = useState('');
@@ -801,7 +809,7 @@ export function MobileConversation({
     connecting: 'kindling',
     ready: 'at hand',
     streaming: 'tending',
-    closed: 'asleep',
+    closed: 'reconnecting',
     error: 'troubled',
   };
   const statusTone: Record<typeof status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -872,6 +880,34 @@ export function MobileConversation({
         <Chip dot tone={statusTone[status]}>
           {statusLabel[status]}
         </Chip>
+        {onTogglePlanMode && (
+          <button
+            onClick={() => onTogglePlanMode(!planMode)}
+            disabled={status === 'streaming'}
+            aria-label={planMode ? 'turn plan mode off' : 'turn plan mode on'}
+            title={
+              planMode
+                ? 'plan mode is on. Sam plans before acting.'
+                : 'turn plan mode on'
+            }
+            style={{
+              background: planMode ? 'var(--gold)' : 'transparent',
+              color: planMode ? 'var(--vellum)' : 'var(--ink-soft)',
+              border: '1px solid ' + (planMode ? 'var(--gold)' : 'var(--rule-soft)'),
+              borderRadius: 999,
+              padding: '3px 9px',
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              fontSize: 11,
+              cursor: status === 'streaming' ? 'not-allowed' : 'pointer',
+              opacity: status === 'streaming' ? 0.5 : 1,
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            plan
+          </button>
+        )}
         {onFreshStart && (
           <button
             onClick={onFreshStart}
@@ -984,6 +1020,21 @@ export function MobileConversation({
               </SamMessage>
             );
           }
+          if (isInteractiveTool(b.tool) && onAnswerTool) {
+            return (
+              <SamMessage key={b.id} time={timeLabel(b.ts)}>
+                <InteractiveToolCard
+                  tool={b.tool}
+                  args={b.args}
+                  toolUseId={b.toolUseId}
+                  answered={b.answered || !!b.result}
+                  answer={b.answer ?? b.result}
+                  disabled={status === 'closed'}
+                  onAnswer={onAnswerTool}
+                />
+              </SamMessage>
+            );
+          }
           return (
             <SamMessage key={b.id} time={timeLabel(b.ts)}>
               <ToolCall
@@ -997,7 +1048,7 @@ export function MobileConversation({
           );
         })}
 
-        {status === 'streaming' && blocks.length > 0 && (
+        {status === 'streaming' && (
           <div style={{ marginTop: 4 }}>
             <span className="sw-thinking">
               <span></span>

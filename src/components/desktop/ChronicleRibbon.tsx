@@ -31,7 +31,7 @@ export function ChronicleRibbon({
 }: {
   events: ChronicleEvent[];
   activeId?: string | null;
-  /** `${cli}|${cwd}` of the currently-open chat, so the matching live entry
+  /** `${cli}|${cwd}|${chatId}` of the currently-open chat, so the matching live entry
    *  can be highlighted. Without this, every live entry looks identical and
    *  switching between them gives no visual feedback. */
   activeLiveKey?: string | null;
@@ -142,7 +142,7 @@ export function ChronicleRibbon({
             </div>
           )}
           {liveSessions.map((s) => {
-            const liveKey = `${s.cli}|${s.cwd}`;
+            const liveKey = `${s.cli}|${s.cwd}|${s.chatId || 'main'}`;
             const liveActive = liveKey === activeLiveKey;
             const bg = liveActive
               ? 'rgba(184,89,58,0.16)'

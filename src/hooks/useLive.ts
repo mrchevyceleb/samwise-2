@@ -13,7 +13,7 @@ export type UseLiveResult = {
    *  triggering the server-side action; the next poll (or `refetch`) will
    *  reconcile. We deliberately do NOT auto-refetch here — racing the POST
    *  would let the still-running server put the row right back into state. */
-  removeLocal: (cli: string, cwd: string) => void;
+  removeLocal: (cli: string, cwd: string, chatId?: string | null) => void;
   /** Force an immediate poll. Use after a server-mutating call resolves. */
   refetch: () => void;
 };
@@ -50,8 +50,13 @@ export function useLive(): UseLiveResult {
     };
   }, [fetchOnce]);
 
-  const removeLocal = useCallback((cli: string, cwd: string) => {
-    setSessions((prev) => prev.filter((s) => !(s.cli === cli && s.cwd === cwd)));
+  const removeLocal = useCallback((cli: string, cwd: string, chatId?: string | null) => {
+    const normalizedChatId = chatId || 'main';
+    setSessions((prev) => prev.filter((s) => !(
+      s.cli === cli &&
+      s.cwd === cwd &&
+      (s.chatId || 'main') === normalizedChatId
+    )));
   }, []);
 
   const refetch = useCallback(() => { void fetchOnce(); }, [fetchOnce]);

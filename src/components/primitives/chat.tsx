@@ -247,6 +247,327 @@ export function ToolCall({
 }
 
 // ─────────────────────────────────────────────
+// InteractiveToolCard — answer UI for AskUserQuestion / ExitPlanMode
+// ─────────────────────────────────────────────
+// Claude pauses its turn whenever it calls one of these tools and waits for
+// a tool_result to arrive. Without this card the agent reports being "stuck
+// in plan mode" or repeats the same question forever, because we never reply.
+//
+// The component parses the (raw) args JSON, renders an answer form, and on
+// submit calls back into useChat.respondToTool with the chosen text. The
+// caller marks the block `answered` once the round-trip echoes back, at which
+// point we collapse to a summary line.
+
+type InteractiveToolCardProps = {
+  tool: string;
+  args: string;
+  toolUseId: string;
+  answered?: boolean;
+  answer?: string;
+  disabled?: boolean;
+  onAnswer: (toolUseId: string, content: string) => void;
+};
+
+function safeParseArgs(raw: string): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {}
+  return null;
+}
+
+export function InteractiveToolCard({
+  tool,
+  args,
+  toolUseId,
+  answered,
+  answer,
+  disabled,
+  onAnswer,
+}: InteractiveToolCardProps) {
+  const parsed = safeParseArgs(args);
+  const [other, setOther] = useState('');
+
+  if (answered) {
+    const summary = answer && answer.trim() ? answer.trim() : 'answered';
+    const label = tool === 'ExitPlanMode' ? 'plan answered' : 'question answered';
+    return (
+      <div
+        style={{
+          borderLeft: '2px solid var(--moss)',
+          paddingLeft: 14,
+          marginTop: 10,
+          marginBottom: 10,
+          background: 'rgba(111,128,84,0.06)',
+          padding: '8px 14px',
+          borderRadius: 2,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            gap: 10,
+            alignItems: 'baseline',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span
+            className="sw-smallcaps"
+            style={{ fontSize: 11, color: 'var(--moss)', whiteSpace: 'nowrap' }}
+          >
+            {label}
+          </span>
+          <span
+            style={{
+              fontFamily: 'var(--serif-body)',
+              fontStyle: 'italic',
+              fontSize: 14,
+              color: 'var(--ink-soft)',
+              flex: '1 1 100%',
+              wordBreak: 'break-word',
+            }}
+          >
+            {summary.length > 200 ? summary.slice(0, 200) + '…' : summary}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (tool === 'ExitPlanMode') {
+    const plan = typeof parsed?.plan === 'string' ? (parsed.plan as string) : '';
+    return (
+      <div
+        style={{
+          border: '1px solid var(--gold)',
+          background: 'rgba(199,158,68,0.08)',
+          padding: '14px 16px',
+          marginTop: 10,
+          marginBottom: 10,
+          borderRadius: 4,
+          boxShadow: '0 1px 0 var(--shadow-warm)',
+        }}
+      >
+        <div
+          className="sw-smallcaps"
+          style={{ fontSize: 11, color: 'var(--gold)', marginBottom: 8 }}
+        >
+          Sam asks to leave plan mode
+        </div>
+        {plan ? (
+          <div
+            style={{
+              fontFamily: 'var(--serif-body)',
+              fontSize: 16,
+              lineHeight: 1.55,
+              color: 'var(--ink)',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              marginBottom: 12,
+            }}
+          >
+            {plan}
+          </div>
+        ) : (
+          <div
+            style={{
+              fontFamily: 'var(--serif-display)',
+              fontStyle: 'italic',
+              color: 'var(--ink-faint)',
+              marginBottom: 12,
+            }}
+          >
+            (waiting for the plan to finish streaming…)
+          </div>
+        )}
+        <textarea
+          value={other}
+          onChange={(e) => setOther(e.target.value)}
+          placeholder="optional feedback to keep planning…"
+          rows={2}
+          style={{
+            width: '100%',
+            border: '1px solid var(--rule-soft)',
+            background: 'var(--vellum)',
+            padding: '8px 10px',
+            fontFamily: 'var(--serif-body)',
+            fontSize: 14,
+            lineHeight: 1.5,
+            resize: 'vertical',
+            outline: 'none',
+            marginBottom: 10,
+            borderRadius: 2,
+          }}
+        />
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            className="sw-btn sw-btn-primary"
+            disabled={disabled || !plan}
+            onClick={() => onAnswer(toolUseId, 'User approved the plan. Proceed with execution.')}
+            style={{ fontSize: 13, padding: '7px 14px', opacity: disabled || !plan ? 0.5 : 1 }}
+          >
+            Approve & proceed
+          </button>
+          <button
+            className="sw-btn"
+            disabled={disabled}
+            onClick={() => {
+              const note = other.trim();
+              const reply = note
+                ? `User declined to leave plan mode. Feedback: ${note}`
+                : 'User declined to leave plan mode. Keep planning, ask clarifying questions, and try again.';
+              onAnswer(toolUseId, reply);
+              setOther('');
+            }}
+            style={{ fontSize: 13, padding: '7px 14px', color: 'var(--ember)' }}
+          >
+            Keep planning
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // AskUserQuestion
+  const question = typeof parsed?.question === 'string' ? (parsed.question as string) : '';
+  const header = typeof parsed?.header === 'string' ? (parsed.header as string) : '';
+  const rawOptions = Array.isArray(parsed?.options) ? (parsed.options as unknown[]) : [];
+  const options = rawOptions
+    .map((o) => {
+      if (typeof o === 'string') return { label: o, description: '' };
+      if (o && typeof o === 'object') {
+        const obj = o as Record<string, unknown>;
+        const label = typeof obj.label === 'string' ? obj.label : '';
+        const description = typeof obj.description === 'string' ? obj.description : '';
+        return { label, description };
+      }
+      return { label: '', description: '' };
+    })
+    .filter((o) => o.label);
+
+  const submitOther = () => {
+    const text = other.trim();
+    if (!text) return;
+    onAnswer(toolUseId, text);
+    setOther('');
+  };
+
+  return (
+    <div
+      style={{
+        border: '1px solid var(--ember)',
+        background: 'rgba(184,89,58,0.06)',
+        padding: '14px 16px',
+        marginTop: 10,
+        marginBottom: 10,
+        borderRadius: 4,
+        boxShadow: '0 1px 0 var(--shadow-warm)',
+      }}
+    >
+      <div
+        className="sw-smallcaps"
+        style={{ fontSize: 11, color: 'var(--ember)', marginBottom: 8 }}
+      >
+        {header || 'Sam asks'}
+      </div>
+      {question ? (
+        <div
+          style={{
+            fontFamily: 'var(--serif-display)',
+            fontStyle: 'italic',
+            fontSize: 18,
+            lineHeight: 1.4,
+            color: 'var(--ink)',
+            marginBottom: 12,
+            wordBreak: 'break-word',
+          }}
+        >
+          {question}
+        </div>
+      ) : (
+        <div
+          style={{
+            fontFamily: 'var(--serif-display)',
+            fontStyle: 'italic',
+            color: 'var(--ink-faint)',
+            marginBottom: 12,
+          }}
+        >
+          (waiting for the question to finish streaming…)
+        </div>
+      )}
+      {options.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+          {options.map((opt, i) => (
+            <button
+              key={i}
+              className="sw-btn"
+              disabled={disabled}
+              onClick={() => onAnswer(toolUseId, opt.label)}
+              style={{
+                textAlign: 'left',
+                fontSize: 14,
+                padding: '8px 12px',
+                lineHeight: 1.4,
+                opacity: disabled ? 0.5 : 1,
+              }}
+            >
+              <div style={{ fontFamily: 'var(--serif-display)', fontStyle: 'italic', color: 'var(--ink)' }}>
+                {opt.label}
+              </div>
+              {opt.description && (
+                <div className="sw-mono" style={{ fontSize: 11.5, color: 'var(--ink-soft)', marginTop: 2 }}>
+                  {opt.description}
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+        <textarea
+          value={other}
+          onChange={(e) => setOther(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              submitOther();
+            }
+          }}
+          placeholder="or write your own answer…"
+          rows={1}
+          disabled={disabled}
+          style={{
+            flex: 1,
+            border: '1px solid var(--rule-soft)',
+            background: 'var(--vellum)',
+            padding: '8px 10px',
+            fontFamily: 'var(--serif-body)',
+            fontSize: 14,
+            lineHeight: 1.5,
+            resize: 'vertical',
+            outline: 'none',
+            borderRadius: 2,
+            opacity: disabled ? 0.5 : 1,
+          }}
+        />
+        <button
+          className="sw-btn sw-btn-primary"
+          disabled={disabled || !other.trim()}
+          onClick={submitOther}
+          style={{ fontSize: 13, padding: '8px 14px', opacity: disabled || !other.trim() ? 0.5 : 1 }}
+        >
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // CodeBlock — ledger-line gutter
 // ─────────────────────────────────────────────
 export function CodeBlock({

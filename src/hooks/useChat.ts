@@ -98,7 +98,11 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
       if (b.kind === 'user') return b;
       if (!('cbIndex' in b) || b.cbIndex !== idx || b.turnId !== turnId) return b;
       if (b.kind === 'tool') {
-        return { ...b, args: prettifyJson(b.args), open: false };
+        // Interactive tools need their full JSON args so the answer card can
+        // parse `question`/`options`/`plan`. Prettifying truncates and turns
+        // the JSON into a `key=value` summary string we can't rehydrate.
+        const keepRaw = isInteractiveTool(b.tool);
+        return { ...b, args: keepRaw ? b.args : prettifyJson(b.args), open: false };
       }
       return { ...b, open: false };
     });
@@ -112,7 +116,7 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
         const summary = stringifyResult(c.content);
         next = next.map((b) =>
           b.kind === 'tool' && b.toolUseId === c.tool_use_id
-            ? { ...b, result: summary, running: false }
+            ? { ...b, result: summary, running: false, answered: true }
             : b,
         );
       }
@@ -120,10 +124,30 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
     return next;
   }
 
+  // Server-injected echo of a user reply to an interactive tool (answer card
+  // for AskUserQuestion / ExitPlanMode). Mark the matching tool block as
+  // answered so the card collapses; the model's continuation will arrive as
+  // the tool_result echo above shortly after.
+  if (ev.type === '_tool_response' && typeof ev.toolUseId === 'string') {
+    const reply = typeof ev.content === 'string' ? ev.content : '';
+    return blocks.map((b) =>
+      b.kind === 'tool' && b.toolUseId === ev.toolUseId
+        ? { ...b, answered: true, answer: reply, running: false }
+        : b,
+    );
+  }
+
   // Final `assistant` event: with content_block_* coverage above we already
   // have everything. Skip.
 
   return blocks;
+}
+
+/** Tools that need the user (or the UI) to respond with a tool_result before
+ *  the model can advance the turn. The reducer keeps their raw JSON args so
+ *  the answer card can render the question/options/plan. */
+export function isInteractiveTool(name: string): boolean {
+  return name === 'AskUserQuestion' || name === 'ExitPlanMode';
 }
 
 function prettifyJson(raw: string): string {
@@ -166,15 +190,24 @@ function summarize(s: string): string {
   return `${firstLine.slice(0, 80)}…`;
 }
 
-function blocksStorageKey(cli: CompanionId, repoPath: string, sessionId?: string | null): string {
-  const sessionPart = sessionId ? `|session:${sessionId}` : '';
-  return `samwise-2:blocks:${cli}|${repoPath}${sessionPart}`;
+function conversationKey(cli: CompanionId, repoPath: string, chatId = 'main'): string {
+  const normalized = chatId || 'main';
+  return `${cli}|${repoPath}|chat:${normalized}`;
 }
 
-function readStoredBlocks(cli: CompanionId, repoPath: string, sessionId?: string | null): ChatBlock[] {
+function sessionKey(cli: CompanionId, repoPath: string, chatId = 'main'): string {
+  const normalized = chatId || 'main';
+  return normalized === 'main' ? `${cli}|${repoPath}` : `${cli}|${repoPath}|${normalized}`;
+}
+
+function blocksStorageKey(cli: CompanionId, repoPath: string, chatId = 'main'): string {
+  return `samwise-2:v2:blocks:${conversationKey(cli, repoPath, chatId)}`;
+}
+
+function readStoredBlocks(cli: CompanionId, repoPath: string, chatId = 'main'): ChatBlock[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath, sessionId));
+    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath, chatId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed as ChatBlock[];
@@ -186,7 +219,7 @@ function writeStoredBlocks(
   cli: CompanionId,
   repoPath: string,
   blocks: ChatBlock[],
-  sessionId?: string | null,
+  chatId = 'main',
 ): void {
   if (typeof window === 'undefined') return;
   try {
@@ -202,14 +235,14 @@ function writeStoredBlocks(
       }
       return b;
     });
-    localStorage.setItem(blocksStorageKey(cli, repoPath, sessionId), JSON.stringify(tail));
+    localStorage.setItem(blocksStorageKey(cli, repoPath, chatId), JSON.stringify(tail));
   } catch {}
 }
 
-function readStoredSeq(cli: CompanionId, repoPath: string, sessionId?: string | null): number {
+function readStoredSeq(cli: CompanionId, repoPath: string, chatId = 'main'): number {
   if (typeof window === 'undefined') return 0;
   try {
-    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath, sessionId) + ':seq');
+    const raw = localStorage.getItem(blocksStorageKey(cli, repoPath, chatId) + ':seq');
     if (raw) {
       const n = Number(raw);
       if (Number.isFinite(n)) return n;
@@ -222,23 +255,23 @@ function writeStoredSeq(
   cli: CompanionId,
   repoPath: string,
   seq: number,
-  sessionId?: string | null,
+  chatId = 'main',
 ): void {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(blocksStorageKey(cli, repoPath, sessionId) + ':seq', String(seq));
+    localStorage.setItem(blocksStorageKey(cli, repoPath, chatId) + ':seq', String(seq));
   } catch {}
 }
 
 export function useChat(opts: {
   repo: Repo | undefined;
   cli: CompanionId;
+  chatId?: string;
   enabled: boolean;
   initialMessage?: string | null;
-  sessionId?: string | null;
   onInitialMessageSent?: () => void;
 }) {
-  const { repo, cli, enabled, initialMessage, sessionId, onInitialMessageSent } = opts;
+  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent } = opts;
   // Blocks and the conversation key they belong to live in a single state
   // value so they always update atomically. A previous bug stored the key in
   // a ref that was updated synchronously while blocks were updated via
@@ -250,13 +283,27 @@ export function useChat(opts: {
   );
   const blocks = chat.blocks;
   const [status, setStatus] = useState<Status>('idle');
+  const statusRef = useRef<Status>('idle');
+  statusRef.current = status;
+  const pendingSendRef = useRef(false);
+  /** Tracks user actions that fire-and-forget over WS but expect a confirming
+   *  event (planModeChanged, _tool_response, etc.). Without this, the error
+   *  branch below treats every error received outside `streaming` as "idle
+   *  stderr" and console.warn-swallows it — so a failed plan-mode toggle or
+   *  answer-card click would silently do nothing. */
+  const pendingActionRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(null);
+  /** Server-confirmed plan-mode flag. Updated on `ready` and `planModeChanged`.
+   *  `null` means the server hasn't told us yet. */
+  const [planMode, setPlanModeState] = useState<boolean | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const teardownRef = useRef(false);
+  const connectionIdRef = useRef(0);
   const turnIdRef = useRef('');
+  const forceReconnectRef = useRef<() => void>(() => {});
   // Mirror the initial message into a ref so the WS onmessage handler can
   // read the latest value without re-subscribing every render.
   const initialMessageRef = useRef<string | null>(initialMessage ?? null);
@@ -277,17 +324,41 @@ export function useChat(opts: {
     if (initialMessage) {
       initialMessageRef.current = initialMessage;
       initialSendInFlightRef.current = false;
+      const ws = wsRef.current;
+      if (
+        repo &&
+        ws &&
+        ws.readyState === WebSocket.OPEN &&
+        (status === 'ready' || status === 'idle')
+      ) {
+        const expectedKey = conversationKey(cli, repo.path, chatId);
+        initialSendInFlightRef.current = true;
+        setChat((prev) => {
+          if (prev.key !== expectedKey) return prev;
+          const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
+          if (lastUser && lastUser.kind === 'user' && lastUser.text === initialMessage) return prev;
+          return {
+            key: prev.key,
+            blocks: [
+              ...prev.blocks,
+              { kind: 'user', id: id(), text: initialMessage, ts: Date.now() },
+            ],
+          };
+        });
+        pendingSendRef.current = true;
+        ws.send(JSON.stringify({ type: 'send', chatId, text: initialMessage }));
+      }
     } else if (!initialSendInFlightRef.current) {
       initialMessageRef.current = null;
     }
-  }, [initialMessage]);
+  }, [chatId, cli, initialMessage, repo, status]);
 
   // Save to localStorage whenever blocks OR lastSeq change. lastSeq must be
   // a dep so seq advances are persisted even when the event didn't mutate
   // blocks — see comment on `lastSeq` above for the duplicate-render bug
   // this prevents.
   // CRITICAL: only write when chat.key matches the current (cli, repo,
-  // sessionId). This guards two cases at once:
+  // chatId). This guards two cases at once:
   // 1. First render after repos resolve — chat.key is null so we don't
   //    overwrite saved history with an empty initial state.
   // 2. Mid-switch render where new (cli, repo) has landed but chat.blocks
@@ -296,47 +367,50 @@ export function useChat(opts: {
   //    lands atomically in the connect effect.
   useEffect(() => {
     if (!repo) return;
-    const key = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+    const key = conversationKey(cli, repo.path, chatId);
     if (chat.key !== key) return;
-    writeStoredBlocks(cli, repo.path, chat.blocks, sessionId);
-    writeStoredSeq(cli, repo.path, lastSeqRef.current, sessionId);
-  }, [chat, lastSeq, repo?.path, cli, sessionId]);
+    writeStoredBlocks(cli, repo.path, chat.blocks, chatId);
+    writeStoredSeq(cli, repo.path, lastSeqRef.current, chatId);
+  }, [chat, lastSeq, repo?.path, cli, chatId]);
 
   useEffect(() => {
     if (!enabled || !repo) return;
 
     teardownRef.current = false;
+    const connectionId = ++connectionIdRef.current;
+    const isCurrentConnection = () => connectionIdRef.current === connectionId && !teardownRef.current;
     // Conversation identity for this effect's lifetime. setChat updates that
     // mutate blocks must guard on prev.key === expectedKey, so a stream event
     // from a prior conversation can never append into the wrong chat.
-    const expectedKey = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+    const expectedKey = conversationKey(cli, repo.path, chatId);
     // Restore prior blocks from localStorage so a page reload doesn't wipe
     // the chat. Atomically pair them with the owning key so the persistence
     // effect's guard can never observe new-key + old-blocks.
-    const stored = readStoredBlocks(cli, repo.path, sessionId);
+    const stored = readStoredBlocks(cli, repo.path, chatId);
     setChat({ key: expectedKey, blocks: stored });
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
     // Sequence we've already seen (persisted) — replay only what's newer.
-    const restoredSeq = readStoredSeq(cli, repo.path, sessionId);
+    const restoredSeq = readStoredSeq(cli, repo.path, chatId);
     lastSeqRef.current = restoredSeq;
     setLastSeq(restoredSeq);
 
-    // Bind the expected session key (no sessionId — server doesn't tag
-    // messages with it) to THIS effect's (cli, repo) so the closure can
-    // validate every incoming message without latching state from a
-    // possibly-stale first event after a switch.
-    const expectedSessionKey = `${cli}|${repo.path}`;
-    // Active session-id anchor for this effect's lifetime. Initialized from
-    // the chronicle anchor passed in via props; rotates when the server
-    // signals a legitimate session reset (`freshStarted`, `sessionRebound`)
-    // or surfaces a new id via `ready`. Used to drop events from a foreign
-    // tab that activated a different chronicle session for the same
-    // (cli, repo).
-    const activeSessionId = { current: sessionId ?? null };
+    // Bind the expected session key to THIS effect's (cli, repo, chatId) so
+    // late socket events from an old conversation can never append into the
+    // current chat.
+    const expectedSessionKey = sessionKey(cli, repo.path, chatId);
+
+    const detachSocket = (socket: WebSocket | null) => {
+      if (!socket) return;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      try { socket.close(); } catch {}
+    };
 
     const connect = () => {
-      if (teardownRef.current) return;
+      if (!isCurrentConnection()) return;
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
       const ws = new WebSocket(`${proto}://${window.location.host}/api/ws`);
       wsRef.current = ws;
@@ -344,16 +418,19 @@ export function useChat(opts: {
       setError(null);
 
       ws.onopen = () => {
+        if (!isCurrentConnection()) return;
         reconnectAttemptRef.current = 0;
         ws.send(JSON.stringify({
           type: 'hello',
           cli,
           repo: repo.path,
+          chatId,
           sinceSeq: lastSeqRef.current,
         }));
       };
       ws.onmessage = (e) => {
-        // If the user switched (cli/repo/sessionId) and this is the previous
+        if (!isCurrentConnection()) return;
+        // If the user switched (cli/repo/chatId) and this is the previous
         // socket finishing its message queue, drop everything — the new
         // effect's WS owns the chat now.
         if (ws !== wsRef.current) return;
@@ -368,61 +445,12 @@ export function useChat(opts: {
           'stream', 'turnStart', 'turnEnd', 'freshStarted',
           'sessionRebound', 'ready', 'sessionClosed',
         ]);
-        // Messages that AUTHORITATIVELY rotate the active session_id for
-        // THIS WS — `freshStarted` and `sessionRebound` are direct
-        // responses to this client's own actions (freshStart, stale-resume
-        // retry), so their new sessionId is ours by construction.
-        const ROTATES_ANCHOR = new Set(['freshStarted', 'sessionRebound']);
         if (CHAT_AFFECTING.has(msg.type)) {
           if (typeof msg.sessionKey !== 'string' || msg.sessionKey !== expectedSessionKey) {
             // eslint-disable-next-line no-console
             console.warn(
               `[useChat] dropping ${msg.type}: expected sessionKey ${expectedSessionKey}, got ${msg.sessionKey ?? 'undefined'}`,
             );
-            return;
-          }
-          if (ROTATES_ANCHOR.has(msg.type)) {
-            if (typeof msg.sessionId === 'string') {
-              activeSessionId.current = msg.sessionId;
-            } else if (msg.sessionId === null) {
-              activeSessionId.current = null;
-            }
-          } else if (msg.type === 'ready') {
-            // `ready` latches the anchor on the FIRST bind (fresh live chat
-            // with no chronicle anchor). On a reconnect after another tab
-            // hijacked this (cli, repo) to a different session_id, the
-            // anchor is already set — fall through to the multi-tab guard
-            // below so we DON'T silently follow the foreign session.
-            if (activeSessionId.current == null && typeof msg.sessionId === 'string') {
-              activeSessionId.current = msg.sessionId;
-            } else if (
-              activeSessionId.current
-              && typeof msg.sessionId === 'string'
-              && msg.sessionId !== activeSessionId.current
-            ) {
-              // eslint-disable-next-line no-console
-              console.warn(
-                `[useChat] dropping ${msg.type}: expected sessionId ${activeSessionId.current}, got ${msg.sessionId}`,
-              );
-              setError('this conversation was opened in another window — refresh to resume');
-              setStatus('closed');
-              return;
-            }
-          } else if (
-            // Multi-tab guard. If this hook is anchored to a specific
-            // session_id and the server is now serving a DIFFERENT one for
-            // the same (cli, repo), drop the event and surface a clear
-            // error so the user knows the conversation moved elsewhere.
-            activeSessionId.current
-            && typeof msg.sessionId === 'string'
-            && msg.sessionId !== activeSessionId.current
-          ) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              `[useChat] dropping ${msg.type}: expected sessionId ${activeSessionId.current}, got ${msg.sessionId}`,
-            );
-            setError('this conversation was opened in another window — refresh to resume');
-            setStatus('closed');
             return;
           }
         } else if (
@@ -453,6 +481,7 @@ export function useChat(opts: {
           // jump straight to 'streaming' so the UI shows tending instead of
           // looking idle while events stream in via replay.
           setStatus(msg.busy ? 'streaming' : 'ready');
+          if (typeof msg.planMode === 'boolean') setPlanModeState(msg.planMode);
           // Send a pending first message (typed straight into the threshold)
           // the moment the server says ready. Keep it pending until turnStart
           // confirms the server accepted it, so startup reconnects do not lose
@@ -472,8 +501,13 @@ export function useChat(opts: {
                 ],
               };
             });
-            ws.send(JSON.stringify({ type: 'send', text: pending }));
+            pendingSendRef.current = true;
+            ws.send(JSON.stringify({ type: 'send', chatId, text: pending }));
           }
+        }
+        else if (msg.type === 'planModeChanged') {
+          pendingActionRef.current = false;
+          if (typeof msg.planMode === 'boolean') setPlanModeState(msg.planMode);
         }
         else if (msg.type === 'sessionRebound') {
           // Server spawned a fresh process for the same (cli, cwd) — its
@@ -489,11 +523,18 @@ export function useChat(opts: {
             initialMessageRef.current = null;
             onInitialMessageSentRef.current?.();
           }
+          pendingSendRef.current = false;
+          pendingActionRef.current = false;
           setError(null);
           setStatus('streaming');
         }
-        else if (msg.type === 'turnEnd') setStatus('ready');
+        else if (msg.type === 'turnEnd') {
+          pendingSendRef.current = false;
+          pendingActionRef.current = false;
+          setStatus('ready');
+        }
         else if (msg.type === 'freshStarted') {
+          pendingActionRef.current = false;
           setChat((prev) =>
             prev.key !== expectedKey ? prev : { key: prev.key, blocks: [] },
           );
@@ -504,13 +545,16 @@ export function useChat(opts: {
           lastSeqRef.current = 0;
           setLastSeq(0);
           if (repo) {
-            writeStoredBlocks(cli, repo.path, [], sessionId);
-            writeStoredSeq(cli, repo.path, 0, sessionId);
+            writeStoredBlocks(cli, repo.path, [], chatId);
+            writeStoredSeq(cli, repo.path, 0, chatId);
           }
         }
         else if (msg.type === 'sessionClosed') {
-          setError('This warm session is asleep. Send a message to wake it.');
+          pendingSendRef.current = false;
+          pendingActionRef.current = false;
+          setError('The CLI stopped mid-turn. Reconnecting now.');
           setStatus('closed');
+          window.setTimeout(() => forceReconnectRef.current(), 250);
         }
         else if (msg.type === 'stream') {
           setChat((prev) =>
@@ -536,11 +580,25 @@ export function useChat(opts: {
             });
           }
         }
-        else if (msg.type === 'error') setError(msg.message);
+        else if (msg.type === 'error') {
+          const inFlight =
+            statusRef.current === 'streaming' ||
+            statusRef.current === 'connecting' ||
+            pendingSendRef.current ||
+            pendingActionRef.current;
+          if (inFlight) {
+            pendingSendRef.current = false;
+            pendingActionRef.current = false;
+            setError(msg.message);
+          } else {
+            console.warn('[chat] suppressed idle error:', msg.message);
+          }
+        }
       };
       ws.onclose = () => {
-        if (teardownRef.current) return;
+        if (!isCurrentConnection()) return;
         if (initialSendInFlightRef.current) initialSendInFlightRef.current = false;
+        pendingSendRef.current = false;
         setStatus('closed');
         const attempt = Math.min(reconnectAttemptRef.current, 3);
         const delay = Math.min(1000 * 2 ** attempt, 8000);
@@ -548,24 +606,78 @@ export function useChat(opts: {
         reconnectTimerRef.current = window.setTimeout(connect, delay);
       };
       ws.onerror = () => {
+        if (!isCurrentConnection()) return;
         setError('the line went quiet, reconnecting…');
       };
+    };
+
+    const reconcile = () => {
+      if (!isCurrentConnection()) return;
+      const live = wsRef.current;
+      if (live && live.readyState === WebSocket.OPEN) {
+        try {
+          live.send(JSON.stringify({
+            type: 'hello',
+            cli,
+            repo: repo.path,
+            chatId,
+            sinceSeq: lastSeqRef.current,
+          }));
+          return;
+        } catch {
+          // fall through to a forced reconnect
+        }
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectAttemptRef.current = 0;
+      detachSocket(wsRef.current);
+      wsRef.current = null;
+      connect();
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') reconcile();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', reconcile);
+    window.addEventListener('online', reconcile);
+    window.addEventListener('pageshow', reconcile);
+
+    forceReconnectRef.current = () => {
+      if (!isCurrentConnection()) return;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      reconnectAttemptRef.current = 0;
+      detachSocket(wsRef.current);
+      wsRef.current = null;
+      setError(null);
+      connect();
     };
 
     connect();
 
     return () => {
       teardownRef.current = true;
+      forceReconnectRef.current = () => {};
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', reconcile);
+      window.removeEventListener('online', reconcile);
+      window.removeEventListener('pageshow', reconcile);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
       if (wsRef.current) {
-        wsRef.current.close();
+        detachSocket(wsRef.current);
         wsRef.current = null;
       }
     };
-  }, [enabled, repo?.path, cli, sessionId]);
+  }, [enabled, repo?.path, cli, chatId]);
 
   const send = (
     text: string,
@@ -573,7 +685,7 @@ export function useChat(opts: {
   ) => {
     if (!repo) return;
     const ws = wsRef.current;
-    const expectedKey = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+    const expectedKey = conversationKey(cli, repo.path, chatId);
     setChat((prev) => {
       if (prev.key !== expectedKey) return prev;
       return {
@@ -588,8 +700,9 @@ export function useChat(opts: {
       setError('Sam is not on the line. Please wait a moment.');
       return;
     }
+    pendingSendRef.current = true;
     setError(null);
-    ws.send(JSON.stringify({ type: 'send', text, images }));
+    ws.send(JSON.stringify({ type: 'send', chatId, text, images }));
   };
 
   const freshStart = () => {
@@ -599,14 +712,14 @@ export function useChat(opts: {
       setError('Sam is not on the line. Please wait a moment.');
       return;
     }
-    ws.send(JSON.stringify({ type: 'freshStart', cli, repo: repo.path }));
+    ws.send(JSON.stringify({ type: 'freshStart', cli, repo: repo.path, chatId }));
   };
 
   const stop = () => {
     if (!repo) return;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(JSON.stringify({ type: 'stop', cli, repo: repo.path }));
+    ws.send(JSON.stringify({ type: 'stop', cli, repo: repo.path, chatId }));
   };
 
   /** Stop the current turn and immediately fire a new prompt. The model sees
@@ -618,7 +731,7 @@ export function useChat(opts: {
   ) => {
     if (!repo) return;
     const ws = wsRef.current;
-    const expectedKey = `${cli}|${repo.path}|${sessionId ?? 'live'}`;
+    const expectedKey = conversationKey(cli, repo.path, chatId);
     setChat((prev) => {
       if (prev.key !== expectedKey) return prev;
       return {
@@ -633,9 +746,49 @@ export function useChat(opts: {
       setError('Sam is not on the line. Please wait a moment.');
       return;
     }
+    pendingSendRef.current = true;
     setError(null);
-    ws.send(JSON.stringify({ type: 'steer', cli, repo: repo.path, text, images }));
+    ws.send(JSON.stringify({ type: 'steer', cli, repo: repo.path, chatId, text, images }));
   };
 
-  return { blocks, status, error, send, steer, freshStart, stop, usage };
+  const reconnect = () => forceReconnectRef.current();
+
+  /** Reply to an interactive tool (AskUserQuestion / ExitPlanMode) with a
+   *  tool_result so the model can finish its turn instead of looping. */
+  const respondToTool = (toolUseId: string, content: string) => {
+    if (!repo) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line. Please wait a moment.');
+      return;
+    }
+    pendingActionRef.current = true;
+    setError(null);
+    ws.send(JSON.stringify({
+      type: 'toolResponse',
+      cli, repo: repo.path, chatId, toolUseId, content,
+    }));
+  };
+
+  /** Toggle plan mode for this (cli, repo, chatId). Server persists the flag,
+   *  recycles the warm process if it changed, and echoes back planModeChanged. */
+  const setPlanMode = (enabled: boolean) => {
+    if (!repo) return;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line. Please wait a moment.');
+      return;
+    }
+    pendingActionRef.current = true;
+    setError(null);
+    ws.send(JSON.stringify({
+      type: 'setPlanMode',
+      cli, repo: repo.path, chatId, enabled,
+    }));
+  };
+
+  return {
+    blocks, status, error, send, steer, freshStart, stop, reconnect, usage,
+    planMode, setPlanMode, respondToTool,
+  };
 }

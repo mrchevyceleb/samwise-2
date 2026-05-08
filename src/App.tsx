@@ -25,7 +25,12 @@ type View = 'threshold' | 'conversation';
 // server-side event buffer can replay the missed turn output.
 const ACTIVE_KEY = 'samwise-2:active';
 const CHRONICLE_COLLAPSED_KEY = 'samwise-2:chronicle-collapsed';
-type ActiveSession = { cli: CompanionId; repoPath: string; sessionId?: string | null };
+type ActiveSession = {
+  cli: CompanionId;
+  repoPath: string;
+  chatId?: string | null;
+  sessionId?: string | null;
+};
 
 function readActive(): ActiveSession | null {
   if (typeof window === 'undefined') return null;
@@ -40,6 +45,7 @@ function readActive(): ActiveSession | null {
       return {
         cli: v.cli,
         repoPath: v.repoPath,
+        chatId: typeof v.chatId === 'string' ? v.chatId : 'main',
         sessionId: typeof v.sessionId === 'string' ? v.sessionId : null,
       };
     }
@@ -80,16 +86,16 @@ export default function App() {
   const commands = useCommands();
   const { sessions: liveSessions, removeLocal: removeLiveSession, refetch: refetchLive } = useLive();
 
-  const dismissLiveSession = async (s: { cli: string; cwd: string }) => {
+  const dismissLiveSession = async (s: { cli: string; cwd: string; chatId?: string | null }) => {
     // Optimistic remove first so the row disappears instantly, then POST.
     // Refetch only after the POST resolves — refetching before would race
     // the server (still showing the session) and undo the optimistic remove.
-    removeLiveSession(s.cli, s.cwd);
+    removeLiveSession(s.cli, s.cwd, s.chatId || 'main');
     try {
       await fetch('/api/session/dismiss', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cli: s.cli, cwd: s.cwd }),
+        body: JSON.stringify({ cli: s.cli, cwd: s.cwd, chatId: s.chatId || 'main' }),
       });
     } catch {
       // Network blip — let the next regular poll reconcile.
@@ -109,16 +115,16 @@ export default function App() {
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [chronicleCollapsed, setChronicleCollapsed] = useState(readChronicleCollapsed);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
-  const [chatSessionId, setChatSessionId] = useState<string | null>(initialActive?.sessionId ?? null);
+  const [chatId, setChatId] = useState<string>(initialActive?.chatId ?? 'main');
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
 
   const chat = useChat({
     repo,
     cli: companion,
+    chatId,
     enabled: view === 'conversation' && !!repo,
     initialMessage: pendingFirstMessage,
-    sessionId: chatSessionId,
     onInitialMessageSent: () => setPendingFirstMessage(null),
   });
 
@@ -169,20 +175,21 @@ export default function App() {
     companion: c,
     repo: r,
     initialMessage,
-    sessionId,
+    chatId: nextChatId,
   }: {
     companion: CompanionId;
     repo?: Repo;
     initialMessage?: string;
-    sessionId?: string | null;
+    chatId?: string | null;
   }) => {
+    const normalizedChatId = nextChatId || 'main';
     setCompanion(c);
     setRepo(r);
-    setChatSessionId(sessionId ?? null);
+    setChatId(normalizedChatId);
     setView('conversation');
     setErrandTitle('a fresh errand');
     setPendingFirstMessage(initialMessage ?? null);
-    if (r) writeActive({ cli: c, repoPath: r.path, sessionId: sessionId ?? null });
+    if (r) writeActive({ cli: c, repoPath: r.path, chatId: normalizedChatId });
     else writeActive(null);
   };
 
@@ -195,6 +202,7 @@ export default function App() {
     cli: CompanionId;
     cwd: string;
     repoName: string;
+    chatId?: string | null;
     sessionId: string | null;
   }) => {
     // If this live session corresponds to a chronicle entry, keep both the
@@ -203,7 +211,7 @@ export default function App() {
     setForth({
       companion: s.cli,
       repo: repoForPath(s.cwd, s.repoName),
-      sessionId: s.sessionId,
+      chatId: s.chatId || 'main',
     });
   };
 
@@ -225,7 +233,7 @@ export default function App() {
       const r = await fetch('/api/session/activate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cli: c, cwd: ev.cwd, sessionId: ev.id }),
+        body: JSON.stringify({ cli: c, cwd: ev.cwd, sessionId: ev.id, chatId: ev.id }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
     } catch (e) {
@@ -235,10 +243,17 @@ export default function App() {
     const activatedRepo = repoForPath(ev.cwd, ev.repo);
     setCompanion(c);
     setRepo(activatedRepo);
-    setChatSessionId(ev.id);
+    setChatId(ev.id);
     setView('conversation');
-    writeActive({ cli: c, repoPath: ev.cwd, sessionId: ev.id });
+    writeActive({ cli: c, repoPath: ev.cwd, chatId: ev.id, sessionId: ev.id });
     setErrandTitle(ev.title || 'a fresh errand');
+  };
+
+  const beginFreshThread = () => {
+    chat.freshStart();
+    setActiveEventId(null);
+    setErrandTitle('a fresh errand');
+    if (repo) writeActive({ cli: companion, repoPath: repo.path, chatId });
   };
 
   const goToThreshold = () => {
@@ -290,8 +305,11 @@ export default function App() {
             onOpenChronicle={() => setChronicleOpen(true)}
             onSend={chat.send}
             onSteer={chat.steer}
-            onFreshStart={chat.freshStart}
+            onFreshStart={beginFreshThread}
             onStop={chat.stop}
+            onAnswerTool={chat.respondToTool}
+            onTogglePlanMode={chat.setPlanMode}
+            planMode={chat.planMode}
             acceptImages={true}
           />
         )}
@@ -313,7 +331,7 @@ export default function App() {
   }
 
   const activeLiveKey =
-    view === 'conversation' && repo ? `${companion}|${repo.path}` : null;
+    view === 'conversation' && repo ? `${companion}|${repo.path}|${chatId}` : null;
 
   return (
     <div className={appClass} style={{ flexDirection: 'row' }}>
@@ -364,8 +382,11 @@ export default function App() {
             onSend={chat.send}
             onSteer={chat.steer}
             onBack={goToThreshold}
-            onFreshStart={chat.freshStart}
+            onFreshStart={beginFreshThread}
             onStop={chat.stop}
+            onAnswerTool={chat.respondToTool}
+            onTogglePlanMode={chat.setPlanMode}
+            planMode={chat.planMode}
             acceptImages={true}
           />
         )}

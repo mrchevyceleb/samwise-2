@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { IDLE_TTL_MS } from './runner.ts';
-import { getSessionId, setSessionId } from './sessions.ts';
+import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
+import {
+  appendEventLog,
+  clearEventLog,
+  compactEventLog,
+  loadEventLogSync,
+} from './event-log-store.ts';
 
 const EVENT_BUFFER_SIZE = 2000;
 
@@ -47,6 +53,7 @@ export class CodexSession {
   readonly key: string;
   readonly cli: CliKind = 'codex';
   readonly cwd: string;
+  readonly chatId: string;
   private listeners = new Set<Listener>();
   private subscriberCount = 0;
   private threadId: string | null = null;
@@ -54,6 +61,7 @@ export class CodexSession {
   private dead = false;
   private currentChild: ChildProcess | null = null;
   private eventLog: SeqEvent[] = [];
+  private mirrorEvents = true;
   private nextSeq = 1;
   private lastActivityAtMs = Date.now();
   /** Self-expiring idle timer. Mirrors ClaudeSession.idleTimer. */
@@ -61,10 +69,24 @@ export class CodexSession {
   /** Codex doesn't need a warmup turn — ready immediately. */
   readonly ready: Promise<boolean> = Promise.resolve(true);
 
-  constructor(cwd: string, threadId: string | null) {
+  constructor(cwd: string, chatId: string, threadId: string | null) {
     this.cwd = cwd;
-    this.key = `codex|${cwd}`;
+    this.chatId = chatId;
+    this.key = keyOf(cwd, chatId);
     this.threadId = threadId;
+    try {
+      const restored = loadEventLogSync(this.key);
+      if (restored.events.length > 0) {
+        this.eventLog = restored.events;
+        this.nextSeq = restored.nextSeq;
+        console.log(
+          `[codex] restored ${restored.events.length} event(s) for ${this.key} (nextSeq=${this.nextSeq})`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[codex] event-log restore failed for ${this.key}:`, (err as Error).message);
+    }
+    void compactEventLog(this.key);
   }
 
   subscribe(fn: Listener, sinceSeq = -1, countSubscriber = true): () => void {
@@ -131,6 +153,10 @@ export class CodexSession {
     this.discardListeners();
   }
 
+  detachEventLog(): void {
+    this.mirrorEvents = false;
+  }
+
   /** Discard all listeners. Mirrors ClaudeSession.discardListeners — used
    *  to prevent late event leaks when this session is being torn down and a
    *  new one will replace it for the same key. */
@@ -179,13 +205,22 @@ export class CodexSession {
       return;
     }
 
+    // Plan mode: read at send time so a toggle takes effect on the next turn
+    // without needing to recycle the (otherwise per-turn-spawned) CodexSession.
+    // Read-only sandbox + auto-deny approvals naturally constrains codex to
+    // produce a plan instead of editing or running destructive commands.
+    const planMode = await getPlanMode('codex', this.cwd, this.chatId);
+    const sandboxArgs: string[] = planMode
+      ? ['--sandbox=read-only', '--ask-for-approval=never']
+      : ['--dangerously-bypass-approvals-and-sandbox'];
+
     const prompt = `${CODEX_TURN_PREAMBLE}\n\n${text}`;
     const args: string[] = this.threadId
       ? [
           'exec',
           'resume',
           '--json',
-          '--dangerously-bypass-approvals-and-sandbox',
+          ...sandboxArgs,
           ...imageArgs,
           this.threadId,
           prompt,
@@ -193,7 +228,7 @@ export class CodexSession {
       : [
           'exec',
           '--json',
-          '--dangerously-bypass-approvals-and-sandbox',
+          ...sandboxArgs,
           ...imageArgs,
           prompt,
         ];
@@ -279,7 +314,7 @@ export class CodexSession {
         session_id: this.threadId ?? undefined,
       });
       if (this.threadId) {
-        await setSessionId('codex', this.cwd, this.threadId);
+        await setSessionId('codex', this.cwd, this.threadId, this.chatId);
       }
       this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
     });
@@ -306,6 +341,7 @@ export class CodexSession {
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
     }
+    if (this.mirrorEvents) appendEventLog(this.key, se);
     this.disarmIdleTimer();
     if (this.subscriberCount === 0 && !this.dead) this.armIdleTimer();
     for (const fn of this.listeners) fn(se);
@@ -495,6 +531,11 @@ export class CodexSession {
 /** Manager keyed by cwd — same semantics as the claude session map. */
 const codexSessions = new Map<string, CodexSession>();
 
+function keyOf(cwd: string, chatId = 'main'): string {
+  const normalized = chatId || 'main';
+  return normalized === 'main' ? `codex|${cwd}` : `codex|${cwd}|${normalized}`;
+}
+
 /** Used by CodexSession.idleExpire to evict itself. No-op if a different
  *  session has since taken the key. */
 function removeFromCodexMap(key: string, expected: CodexSession): void {
@@ -504,6 +545,7 @@ function removeFromCodexMap(key: string, expected: CodexSession): void {
 export function activeCodexSessions(): {
   cli: CliKind;
   cwd: string;
+  chatId: string;
   busy: boolean;
   sessionId: string | null;
   lastActivityAt: number;
@@ -511,6 +553,7 @@ export function activeCodexSessions(): {
   return Array.from(codexSessions.values()).map((s) => ({
     cli: 'codex',
     cwd: s.cwd,
+    chatId: s.chatId,
     busy: s.isBusy(),
     sessionId: s.sessionId(),
     lastActivityAt: s.lastActivityAt(),
@@ -530,14 +573,18 @@ export function pruneIdleCodexSessions(ttlMs: number, now = Date.now()): number 
   return pruned;
 }
 
-export async function getOrCreateCodexSession(opts: { repoPath: string }): Promise<CodexSession> {
+export async function getOrCreateCodexSession(opts: {
+  repoPath: string;
+  chatId?: string;
+}): Promise<CodexSession> {
   const cwd = opts.repoPath;
-  const key = `codex|${cwd}`;
+  const chatId = opts.chatId || 'main';
+  const key = keyOf(cwd, chatId);
   const existing = codexSessions.get(key);
   if (existing && existing.isAlive()) return existing;
 
-  const threadId = (await getSessionId('codex', cwd)) ?? null;
-  const session = new CodexSession(cwd, threadId);
+  const threadId = (await getSessionId('codex', cwd, chatId)) ?? null;
+  const session = new CodexSession(cwd, chatId, threadId);
   codexSessions.set(key, session);
   return session;
 }
@@ -548,9 +595,9 @@ export function shutdownAllCodexSessions(): void {
 }
 
 /** Kill the in-flight codex child but keep the thread id saved for resume. */
-export function interruptCodex(opts: { repoPath: string }): void {
+export function interruptCodex(opts: { repoPath: string; chatId?: string }): void {
   const cwd = opts.repoPath;
-  const key = `codex|${cwd}`;
+  const key = keyOf(cwd, opts.chatId);
   const s = codexSessions.get(key);
   if (s) {
     s.shutdown();
@@ -560,9 +607,9 @@ export function interruptCodex(opts: { repoPath: string }): void {
 
 /** Drop the warm codex child but keep the saved thread id so the next click
  *  resumes the conversation. Used by the user's manual "dismiss" button. */
-export function dropCodexSession(opts: { repoPath: string }): void {
+export function dropCodexSession(opts: { repoPath: string; chatId?: string }): void {
   const cwd = opts.repoPath;
-  const key = `codex|${cwd}`;
+  const key = keyOf(cwd, opts.chatId);
   const s = codexSessions.get(key);
   if (s) {
     s.shutdown();
@@ -570,17 +617,34 @@ export function dropCodexSession(opts: { repoPath: string }): void {
   }
 }
 
+/** Persist the plan-mode flag for codex. Codex is spawn-per-turn, so the next
+ *  send picks up the new sandbox args automatically — there's no warm child
+ *  to recycle. */
+export async function setCodexPlanMode(opts: {
+  repoPath: string;
+  chatId?: string;
+  enabled: boolean;
+}): Promise<void> {
+  await setPlanMode('codex', opts.repoPath, opts.enabled, opts.chatId || 'main');
+}
+
 /** Drop the stored thread id so the next codex spawn starts a fresh thread. */
-export async function freshStartCodex(opts: { repoPath: string }): Promise<CodexSession> {
+export async function freshStartCodex(opts: {
+  repoPath: string;
+  chatId?: string;
+}): Promise<CodexSession> {
   const cwd = opts.repoPath;
-  const key = `codex|${cwd}`;
+  const chatId = opts.chatId || 'main';
+  const key = keyOf(cwd, chatId);
   const existing = codexSessions.get(key);
   if (existing) {
+    existing.detachEventLog();
     existing.shutdown();
     codexSessions.delete(key);
   }
-  await setSessionId('codex', cwd, '');
-  const session = new CodexSession(cwd, null);
+  await clearEventLog(key);
+  await setSessionId('codex', cwd, '', chatId);
+  const session = new CodexSession(cwd, chatId, null);
   codexSessions.set(key, session);
   return session;
 }

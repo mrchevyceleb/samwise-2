@@ -5,7 +5,9 @@ import {
   UserMessage,
   ToolCall,
   ChatInput,
+  InteractiveToolCard,
 } from '../primitives/chat';
+import { isInteractiveTool } from '../../hooks/useChat';
 import { Markdown } from '../primitives/Markdown';
 import type { ChatBlock, CommandEntry } from '../../data/types';
 
@@ -26,6 +28,9 @@ type ConversationProps = {
   onBack?: () => void;
   onFreshStart?: () => void;
   onStop?: () => void;
+  onAnswerTool?: (toolUseId: string, content: string) => void;
+  onTogglePlanMode?: (enabled: boolean) => void;
+  planMode?: boolean | null;
   acceptImages?: boolean;
 };
 
@@ -43,7 +48,7 @@ const statusLabel: Record<Status, string> = {
   connecting: 'kindling',
   ready: 'at hand',
   streaming: 'tending',
-  closed: 'asleep',
+  closed: 'reconnecting',
   error: 'troubled',
 };
 
@@ -64,6 +69,9 @@ export function Conversation({
   onBack,
   onFreshStart,
   onStop,
+  onAnswerTool,
+  onTogglePlanMode,
+  planMode = false,
   acceptImages = true,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -162,6 +170,7 @@ export function Conversation({
               justifyContent: 'center',
               gap: 10,
               flexWrap: 'wrap',
+              alignItems: 'center',
             }}
           >
             <Chip dot tone={statusToneByStatus[status]}>
@@ -169,6 +178,32 @@ export function Conversation({
             </Chip>
             <Chip tone="neutral">{agent.toLowerCase()}</Chip>
             {repo && <Chip tone="neutral">{repo}</Chip>}
+            {onTogglePlanMode && (
+              <button
+                onClick={() => onTogglePlanMode(!planMode)}
+                disabled={status === 'streaming'}
+                title={
+                  planMode
+                    ? 'plan mode is on. Sam will plan and ask before acting.'
+                    : 'turn plan mode on so Sam plans before acting'
+                }
+                style={{
+                  background: planMode ? 'var(--gold)' : 'transparent',
+                  color: planMode ? 'var(--vellum)' : 'var(--ink-soft)',
+                  border: '1px solid ' + (planMode ? 'var(--gold)' : 'var(--rule)'),
+                  borderRadius: 999,
+                  padding: '3px 12px',
+                  fontFamily: 'var(--serif-display)',
+                  fontStyle: 'italic',
+                  fontSize: 12.5,
+                  cursor: status === 'streaming' ? 'not-allowed' : 'pointer',
+                  opacity: status === 'streaming' ? 0.5 : 1,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {planMode ? 'plan mode · on' : 'plan mode · off'}
+              </button>
+            )}
           </div>
           {(onBack || onFreshStart || usage || (onStop && status === 'streaming')) && (
             <div
@@ -251,9 +286,9 @@ export function Conversation({
             </p>
           )}
 
-          {renderBlocks(blocks)}
+          {renderBlocks(blocks, onAnswerTool, status)}
 
-          {status === 'streaming' && blocks.length > 0 && (
+          {status === 'streaming' && (
             <div style={{ marginTop: 4 }}>
               <span className="sw-thinking">
                 <span></span>
@@ -311,7 +346,11 @@ export function Conversation({
   );
 }
 
-function renderBlocks(blocks: ChatBlock[]) {
+function renderBlocks(
+  blocks: ChatBlock[],
+  onAnswerTool: ((toolUseId: string, content: string) => void) | undefined,
+  status: Status,
+) {
   return blocks.map((b) => {
     if (b.kind === 'user') {
       return (
@@ -327,7 +366,23 @@ function renderBlocks(blocks: ChatBlock[]) {
         </SamMessage>
       );
     }
-    // tool
+    // tool — interactive ones get their own card so the user can answer
+    // without retyping into the composer (and so the model unblocks).
+    if (isInteractiveTool(b.tool) && onAnswerTool) {
+      return (
+        <SamMessage key={b.id} time={timeLabel(b.ts)}>
+          <InteractiveToolCard
+            tool={b.tool}
+            args={b.args}
+            toolUseId={b.toolUseId}
+            answered={b.answered || !!b.result}
+            answer={b.answer ?? b.result}
+            disabled={status === 'closed'}
+            onAnswer={onAnswerTool}
+          />
+        </SamMessage>
+      );
+    }
     return (
       <SamMessage key={b.id} time={timeLabel(b.ts)}>
         <ToolCall
