@@ -312,6 +312,12 @@ export function useChat(opts: {
   onInitialMessageSentRef.current = onInitialMessageSent;
   /** Latest event seq received from server. Sent on reconnect for replay. */
   const lastSeqRef = useRef(-1);
+  /** Wall-clock ms of the most recent WS message. Drives the streaming
+   *  watchdog: when a silent-TCP socket leaves us stuck with thinking dots
+   *  while the server has already emitted turnEnd, we notice the silence
+   *  and force a reconnect so the bind-time `ready` (or replayed turnEnd)
+   *  clears the dots. */
+  const lastMessageAtRef = useRef(Date.now());
   /** State mirror of lastSeqRef, used purely to trigger the persistence
    *  effect so localStorage's seq stays in sync with blocks. Without this,
    *  events that bump seq without changing blocks (turnEnd, ready, dedup'd
@@ -420,6 +426,9 @@ export function useChat(opts: {
       ws.onopen = () => {
         if (!isCurrentConnection()) return;
         reconnectAttemptRef.current = 0;
+        // Fresh socket counts as fresh activity — without this, the watchdog
+        // could fire instantly after a slow reconnect during a streaming turn.
+        lastMessageAtRef.current = Date.now();
         ws.send(JSON.stringify({
           type: 'hello',
           cli,
@@ -434,6 +443,9 @@ export function useChat(opts: {
         // socket finishing its message queue, drop everything — the new
         // effect's WS owns the chat now.
         if (ws !== wsRef.current) return;
+        // Any message proves the socket is alive — refresh the watchdog
+        // before we filter / parse so even dropped messages count.
+        lastMessageAtRef.current = Date.now();
         let msg: any;
         try { msg = JSON.parse(String(e.data)); }
         catch { return; }
@@ -646,6 +658,26 @@ export function useChat(opts: {
     window.addEventListener('online', reconcile);
     window.addEventListener('pageshow', reconcile);
 
+    // Streaming-silence watchdog. If we're showing dots but the WS hasn't
+    // delivered a single byte for STREAM_SILENCE_MS, the underlying
+    // connection is almost certainly stale (server already emitted turnEnd,
+    // it just never arrived). Forcing a brand-new WS makes bindSession reply
+    // with a fresh `ready { busy: false }` (or replay the missed turnEnd),
+    // which clears the dots. We deliberately bypass reconcile() here: it
+    // takes an open-socket fast path that resends `hello`, but a stale-OPEN
+    // socket buffers send() into a dead TCP path and the hello never lands.
+    const STREAM_SILENCE_MS = 45_000;
+    const WATCHDOG_TICK_MS = 5_000;
+    const watchdog = window.setInterval(() => {
+      if (!isCurrentConnection()) return;
+      if (statusRef.current !== 'streaming') return;
+      if (Date.now() - lastMessageAtRef.current < STREAM_SILENCE_MS) return;
+      // eslint-disable-next-line no-console
+      console.warn(`[useChat] stream watchdog: silent ${STREAM_SILENCE_MS}ms, forcing reconnect`);
+      lastMessageAtRef.current = Date.now();
+      forceReconnectRef.current();
+    }, WATCHDOG_TICK_MS);
+
     forceReconnectRef.current = () => {
       if (!isCurrentConnection()) return;
       if (reconnectTimerRef.current) {
@@ -668,6 +700,7 @@ export function useChat(opts: {
       window.removeEventListener('focus', reconcile);
       window.removeEventListener('online', reconcile);
       window.removeEventListener('pageshow', reconcile);
+      window.clearInterval(watchdog);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;

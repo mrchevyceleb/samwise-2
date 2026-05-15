@@ -131,12 +131,20 @@ class ClaudeSession {
     // Plan mode and skip-permissions are mutually exclusive. In plan mode the
     // CLI restricts the model to read-only tools and ExitPlanMode; the user
     // approves the plan via tool_result before the model can act.
+    //
+    // AskUserQuestion is disallowed because in -p (non-interactive) stream-json
+    // mode the CLI itself auto-fails the call within milliseconds with a
+    // tool_result `{content:"Answer questions?",is_error:true}` — our host can
+    // never write a real reply in time, so the answer card collapses unanswered
+    // and the user has no way to respond. Blocking the tool forces the model
+    // to ask inline in plain text instead, which the user can reply to normally.
     const args: string[] = [
       '-p',
       '--input-format', 'stream-json',
       '--output-format', 'stream-json',
       '--verbose',
       '--include-partial-messages',
+      '--disallowedTools', 'AskUserQuestion',
       ...(planMode
         ? ['--permission-mode', 'plan']
         : ['--dangerously-skip-permissions']),

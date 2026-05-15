@@ -242,6 +242,16 @@ wss.on('connection', (ws, req) => {
   const peer = (req.headers['x-forwarded-for'] as string | undefined) ?? req.socket.remoteAddress ?? '?';
   console.log(`[ws#${wsId}] open from ${peer}`);
 
+  // Heartbeat liveness flag. The interval below pings every client every
+  // ~25s; the browser auto-replies with pong, which flips this back to true.
+  // If two ping cycles pass without a pong, the underlying TCP is dead
+  // (NAT/Tailscale/sleep) and we terminate the socket so the client's
+  // onclose handler can fire and trigger a fresh reconnect. Without this,
+  // a silently dead WS leaves the chat stuck with "thinking" dots while
+  // the server has long since emitted turnEnd.
+  (ws as any).isAlive = true;
+  ws.on('pong', () => { (ws as any).isAlive = true; });
+
   // Stored as a promise so sends arriving while the spawn is still in flight
   // can `await` it instead of failing with "no session — send hello first".
   let sessionPromise: Promise<AnySession> | null = null;
@@ -341,7 +351,17 @@ wss.on('connection', (ws, req) => {
     return session;
   };
 
-  const retryOnceAfterStaleResume = async (
+  // Watchdog for the first message of a session: if the freshly-spawned claude
+  // never initializes after we write to stdin — either by exiting OR by
+  // sitting silent past the watch window — drop it and respawn fresh so the
+  // message can land. Root cause: runner.ts's quiet-ready timer resolves
+  // session.ready optimistically at 2s, but on a slow cold start (OS wake,
+  // busy disk, large codebase) claude may not be reading stdin yet, and the
+  // write is buffered into the void. Without this retry the user sees their
+  // bubble with no response, forever. Once init has been seen this is a
+  // no-op — waitForInitOrExit resolves 'initialized' immediately for warm
+  // sessions, so we only pay the await on first sends.
+  const retryOnceIfFirstSendStuck = async (
     session: AnySession,
     text: string,
     generation: number,
@@ -349,13 +369,26 @@ wss.on('connection', (ws, req) => {
   ): Promise<boolean> => {
     if (!cliKind || !repoPath || cliKind === 'codex') return false;
     const watchable = session as ResumeWatchableSession;
-    if (watchable.startedWithResume?.() !== true || !watchable.waitForInitOrExit) return false;
+    if (!watchable.waitForInitOrExit) return false;
 
     const state = await watchable.waitForInitOrExit(RESUME_STARTUP_WATCH_MS);
-    if (state !== 'closed') return false;
+    if (state === 'initialized') return false;
     if (generation !== turnGeneration) return false;
 
-    console.log(`[ws#${wsId}] stale resume closed before init, retrying fresh`);
+    console.log(`[ws#${wsId}] first send ${state} after ${RESUME_STARTUP_WATCH_MS}ms, retrying with fresh process`);
+
+    // For a hung process (timeout), spawnSession's internal retry can't help
+    // because session.ready already resolved true via the quiet-ready timer.
+    // Drop the zombie manually and clear any stored session_id — if a resume
+    // hangs once it's likely to hang again, better to lose continuity than
+    // stay stuck. The 'closed' branch falls through to getOrCreateSession,
+    // which goes through spawnSession's own stale-id retry path.
+    if (state === 'timeout') {
+      try { await dropSession(cliKind, repoPath, chatId); } catch {}
+      const cwd = cliKind === 'assistant' ? ASSISTANT_HUB_PATH : repoPath;
+      try { await setSessionId(cliKind, cwd, '', chatId); } catch {}
+    }
+
     try {
       const retrySession = await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
       if (!retrySession) return false;  // superseded by a newer bind
@@ -366,7 +399,7 @@ wss.on('connection', (ws, req) => {
       if ('send' in retrySession) (retrySession as any).send(text, images);
       return true;
     } catch (e) {
-      console.warn(`[ws#${wsId}] stale resume retry failed:`, (e as Error).message);
+      console.warn(`[ws#${wsId}] first-send retry failed:`, (e as Error).message);
       busy = false;
       safeSend({ type: 'error', message: String((e as Error).message) });
       // turnEnd needs a sessionKey to pass the frontend bleed guard. If we
@@ -449,7 +482,7 @@ wss.on('connection', (ws, req) => {
           if (msg.cli === 'codex') await (session as any).send(msg.text, msg.images);
           else {
             (session as any).send(msg.text, msg.images);
-            void retryOnceAfterStaleResume(session, msg.text, turnGeneration, msg.images);
+            void retryOnceIfFirstSendStuck(session, msg.text, turnGeneration, msg.images);
           }
         }
       } catch (e) {
@@ -634,7 +667,7 @@ wss.on('connection', (ws, req) => {
             await (session as any).send(msg.text, msg.images);
           } else {
             (session as any).send(msg.text, msg.images);
-            void retryOnceAfterStaleResume(session, msg.text, turnGeneration, msg.images);
+            void retryOnceIfFirstSendStuck(session, msg.text, turnGeneration, msg.images);
           }
         }
       } catch (e) {
@@ -674,8 +707,26 @@ const idleReaper = setInterval(() => {
 // drive cleanup reliably. The SIGINT/SIGTERM tearDown handler clears the
 // interval explicitly so the process can still exit on signal.
 
+// WS heartbeat. Pings every client every ~25s; clients that don't pong
+// within the next cycle get terminated so their onclose handler fires
+// and the client reconnects. Without this, a stale TCP connection (NAT
+// drop, Tailscale blip, OS sleep) leaves the chat stuck with thinking
+// dots while the server has long since emitted turnEnd.
+const HEARTBEAT_INTERVAL_MS = 25_000;
+const wsHeartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if ((ws as any).isAlive === false) {
+      try { ws.terminate(); } catch {}
+      continue;
+    }
+    (ws as any).isAlive = false;
+    try { ws.ping(); } catch {}
+  }
+}, HEARTBEAT_INTERVAL_MS);
+
 const tearDown = () => {
   clearInterval(idleReaper);
+  clearInterval(wsHeartbeat);
   shutdownAllSessions();
   shutdownAllCodexSessions();
   server.close(() => process.exit(0));
