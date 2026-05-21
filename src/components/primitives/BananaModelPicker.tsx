@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 // Model picker shown only when the Banana runner is the active companion.
-// Quick-picks the four monkey tiers, or searches any OpenRouter model. The
+// Quick-picks the monkey tiers, or searches any OpenRouter model. The
 // chosen id is `monkey/<tier>` or `openrouter/<model.id>`; it threads through
 // useChat -> the WS send payload -> BananaSession.send -> sdk.session.prompt.
 
@@ -11,11 +11,10 @@ export const DEFAULT_BANANA_MODEL = 'monkey/silverback';
 
 type MonkeyTier = { id: string; label: string; blurb: string };
 
-// The four monkey tiers. Order is strongest -> lightest.
+// The monkey tiers. Order is strongest -> lightest.
 const MONKEY_TIERS: MonkeyTier[] = [
   { id: 'monkey/silverback', label: 'Silverback', blurb: 'the heaviest tier' },
   { id: 'monkey/mandrill', label: 'Mandrill', blurb: 'strong and balanced' },
-  { id: 'monkey/gibbon', label: 'Gibbon', blurb: 'quick and nimble' },
   { id: 'monkey/tamarin', label: 'Tamarin', blurb: 'the lightest tier' },
 ];
 
@@ -52,11 +51,21 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModel[]> {
   return openRouterInFlight;
 }
 
-/** Read the persisted last-picked model, falling back to the initial default. */
+/** Read the persisted last-picked model, falling back to the initial default.
+ *  A `monkey/<tier>` value that is no longer an offered tier (e.g. the retired
+ *  `monkey/gibbon`) would dead-end at the runner, so migrate any stale monkey
+ *  tier to the default. Non-monkey ids (every `openrouter/...` pick) pass
+ *  through untouched. */
 export function readStoredBananaModel(): string {
   if (typeof window === 'undefined') return DEFAULT_BANANA_MODEL;
   try {
-    return localStorage.getItem(BANANA_MODEL_STORAGE_KEY) || DEFAULT_BANANA_MODEL;
+    const stored = localStorage.getItem(BANANA_MODEL_STORAGE_KEY);
+    if (!stored) return DEFAULT_BANANA_MODEL;
+    if (stored.startsWith('monkey/') && !MONKEY_TIERS.some((t) => t.id === stored)) {
+      writeStoredBananaModel(DEFAULT_BANANA_MODEL);
+      return DEFAULT_BANANA_MODEL;
+    }
+    return stored;
   } catch {
     return DEFAULT_BANANA_MODEL;
   }
