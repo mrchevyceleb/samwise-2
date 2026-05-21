@@ -409,7 +409,7 @@ wss.on('connection', (ws, req) => {
       const retrySid = retrySession.sessionId();
       safeSend({ type: 'sessionRebound', sessionKey: retrySession.key, sessionId: retrySid, chatId });
       safeSend({ type: 'turnStart', sessionKey: retrySession.key, sessionId: retrySid, chatId });
-      if ('send' in retrySession) (retrySession as any).send(text, images);
+      if (retrySession && 'send' in retrySession) (retrySession as any).send(text, images);
       return true;
     } catch (e) {
       console.warn(`[ws#${wsId}] first-send retry failed:`, (e as Error).message);
@@ -677,7 +677,15 @@ wss.on('connection', (ws, req) => {
         }
       }
       try {
-        const session = await sessionPromise;
+        let session: AnySession | null = await sessionPromise;
+        if (!session && cliKind && repoPath) {
+          // sessionPromise was nulled mid-handler (e.g. a `closed` event from
+          // the prior, idle-expired session landed during the awaits above).
+          // Rebind a fresh session instead of crashing on `'send' in null`.
+          console.log(`[ws#${wsId}] send: session went null mid-flight, rebinding`);
+          session = await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
+        }
+        if (!session) throw new Error('session unavailable, please retry');
         if ('send' in session) {
           // Banana takes a SendOpts object (carries the chosen model). Codex
           // takes images positionally and its async send must be awaited.

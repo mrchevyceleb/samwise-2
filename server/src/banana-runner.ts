@@ -631,6 +631,10 @@ type PartRecord = {
   closed: boolean;
   /** True once at least one streaming delta has been emitted for this block. */
   streamed: boolean;
+  /** Count of chars already emitted for this block. The text reconciler emits
+   *  only `part.text.slice(emittedLen)`, so a dropped or pre-anchor delta can
+   *  never lose text — the next snapshot backfills it. */
+  emittedLen: number;
 };
 type ToolRecord = {
   index: number;
@@ -732,7 +736,10 @@ export class BananaSession {
     if (countSubscriber) this.disarmIdleTimer();
     if (sinceSeq >= 0) {
       for (const se of this.eventLog) {
-        if (se.seq > sinceSeq) fn(se);
+        // Never replay a transient `closed`: a stale one persisted by a prior
+        // shutdown would null the WS sessionPromise the instant a client
+        // reconnects, killing the session before any turn can run.
+        if (se.seq > sinceSeq && se.ev.type !== 'closed') fn(se);
       }
     }
     this.listeners.add(fn);
@@ -916,6 +923,7 @@ export class BananaSession {
     try {
       const server = BananaServer.get();
       await server.ensure();
+      console.log(`[banana send] serve ready, cwd=${this.cwd}`);
       const sdk = server.clientFor(this.cwd);
 
       // The permission ruleset for THIS turn. In plan mode, deny questions and
@@ -948,11 +956,13 @@ export class BananaSession {
           console.warn('[banana] session.update (plan ruleset) failed:', (e as Error).message);
         }
       }
+      console.log(`[banana send] session ${this.threadId} ready, registering route`);
       // Register the route so the SSE stream fans events back to us.
       server.register(this.threadId, this);
 
       // Arm the stall watchdog before firing the prompt.
       this.armWatchdog();
+      console.log('[banana send] watchdog armed, firing prompt');
 
       // Fire the prompt. The streaming reply arrives via onServerEvent over the
       // shared SSE subscription. This call resolves when the request is
@@ -968,6 +978,7 @@ export class BananaSession {
       const thisTurn = this.turn;
       const settle = new Promise<void>((resolve) => { this.turnDone = resolve; });
       await sdk.session.prompt(promptParams as any);
+      console.log('[banana send] prompt accepted, awaiting turn settle');
       // The prompt was accepted by the server. Mark THIS turn so a
       // session.status idle is now honored as completion (guarded against the
       // turn having already settled and been replaced). Until this flips, a
@@ -1032,12 +1043,12 @@ export class BananaSession {
       // proven to belong to this turn, so drop it rather than risk replaying a
       // stale message's content.
       if (typeof partMessageId !== 'string' || !partMessageId) return;
-      // Anchor lazily if the part event beat the message.updated event.
-      if (state.anchorMessageId === null) {
-        this.tryAnchor(state, partMessageId);
-      }
-      // Drop if still unanchored (the candidate was a stale messageID) or if
-      // this part belongs to a different message.
+      // Do NOT anchor from a part.updated: a part carries no role, and the
+      // user message's own text part can arrive first — anchoring to it would
+      // render the prompt straight back as the answer. Anchoring is driven by
+      // deltas (the assistant streams; a user message never does) and by an
+      // assistant message.updated. Drop part.updateds until the turn anchors;
+      // the text reconciler backfills their content from a later snapshot.
       if (state.anchorMessageId === null) return;
       if (partMessageId !== state.anchorMessageId) {
         // Part for a different message. Remember its id so no future turn can
@@ -1057,13 +1068,15 @@ export class BananaSession {
       // malformed and is dropped rather than risk replaying a stale message.
       const deltaMessageId: unknown = props.messageID;
       if (typeof deltaMessageId !== 'string' || !deltaMessageId) return;
-      // A delta carries no message role, so it can only be trusted once the
-      // turn is anchored to its real assistant message. Until then, drop
-      // every delta. We deliberately do NOT record its messageID as seen:
-      // a delta never drives anchoring (only message.updated / part.updated
-      // do), and this delta's id MIGHT be the message this turn anchors to
-      // moments later (the delta-before-anchor race). Recording it would
-      // poison that legitimate anchor.
+      // Deltas only ever stream for the assistant message — a user message is
+      // created whole and never streamed. So the first delta reliably
+      // identifies this turn's assistant message; anchor to it. message.updated
+      // routinely arrives after every delta, and a part.updated can belong to
+      // the user message, so neither is a reliable early anchor. seenMessageIds
+      // still rejects a stale delta left over from a previous turn.
+      if (state.anchorMessageId === null) {
+        this.tryAnchor(state, deltaMessageId);
+      }
       if (state.anchorMessageId === null) return;
       if (deltaMessageId !== state.anchorMessageId) {
         // Delta for a different message. Remember the id so no future turn
@@ -1188,6 +1201,7 @@ export class BananaSession {
           opened: false,
           closed: false,
           streamed: false,
+          emittedLen: 0,
         };
         state.parts.set(partID, rec);
       }
@@ -1212,21 +1226,25 @@ export class BananaSession {
           state.bufferedDeltas.delete(partID);
         }
       }
-      // The part finished. If no delta ever streamed for it (the model
-      // emitted the whole text in one part.updated snapshot), fall back to
-      // the snapshot so the block isn't left empty. The reducer is
-      // delta-additive, so we only do this when the block saw zero deltas.
+      // Reconcile against the snapshot. `part.text` is the full accumulated
+      // text of this block; streaming deltas are an optimization layered on
+      // top. Emitting only the un-emitted remainder here means a dropped or
+      // pre-anchor delta can never lose text — every snapshot backfills it.
+      if (typeof part.text === 'string' && part.text.length > rec.emittedLen) {
+        const remainder = part.text.slice(rec.emittedLen);
+        rec.emittedLen = part.text.length;
+        rec.streamed = true;
+        this.emitClaudeEvent({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: rec.index,
+            delta: { type: 'text_delta', text: remainder },
+          },
+        });
+      }
+      // The part finished — close the block.
       if (part.time?.end && !rec.closed) {
-        if (!rec.streamed && typeof part.text === 'string' && part.text) {
-          this.emitClaudeEvent({
-            type: 'stream_event',
-            event: {
-              type: 'content_block_delta',
-              index: rec.index,
-              delta: { type: 'text_delta', text: part.text },
-            },
-          });
-        }
         rec.closed = true;
         this.emitClaudeEvent({
           type: 'stream_event',
@@ -1429,6 +1447,7 @@ export class BananaSession {
   private emitTextLikeDelta(rec: PartRecord, delta: string): void {
     if (rec.closed) return;
     rec.streamed = true;
+    rec.emittedLen += delta.length;
     this.emitClaudeEvent({
       type: 'stream_event',
       event: {
@@ -1542,11 +1561,16 @@ export class BananaSession {
   private emit(msg: SessionEvent): void {
     this.lastActivityAtMs = Date.now();
     const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
-    this.eventLog.push(se);
-    if (this.eventLog.length > EVENT_BUFFER_SIZE) {
-      this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
+    // `closed` is a transient lifecycle signal, not conversation history.
+    // Persisting it means a future session restores and replays it on
+    // reconnect, nulling the WS sessionPromise and killing the session.
+    if (msg.type !== 'closed') {
+      this.eventLog.push(se);
+      if (this.eventLog.length > EVENT_BUFFER_SIZE) {
+        this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
+      }
+      if (this.mirrorEvents) appendEventLog(this.key, se);
     }
-    if (this.mirrorEvents) appendEventLog(this.key, se);
     this.disarmIdleTimer();
     if (this.subscriberCount === 0 && !this.dead) this.armIdleTimer();
     for (const fn of this.listeners) fn(se);
