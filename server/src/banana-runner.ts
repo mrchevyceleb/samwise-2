@@ -74,6 +74,54 @@ function resolveStallTimeoutMs(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 120_000;
 }
 
+// ── OpenRouter via monkey-models ─────────────────────────────────────────
+//
+// Banana's built-in `openrouter` provider only autoloads when it has an API
+// key. With no key it registers ZERO models, so any OpenRouter pick fails
+// with "model not found". The fix: override the `openrouter` provider's
+// baseURL + apiKey to point at the monkey-models proxy, which forwards any
+// model id straight to OpenRouter (no bundled model list) and supplies the
+// real OpenRouter key. We hand `banana serve` the override inline via the
+// BANANA_CONFIG_CONTENT env var.
+//
+// The monkey base URL + default token are copied verbatim from banana-cli-2
+// packages/opencode/src/provider/provider.ts (MONKEY_BASE_URL /
+// MONKEY_DEFAULT_TOKEN), so the proxy key here matches the one Banana's
+// own `monkey` provider uses.
+const MONKEY_BASE_URL = 'https://monkey-models-production.up.railway.app/v1';
+const MONKEY_DEFAULT_TOKEN =
+  '086399eca157e4ad2fc0fecfb254da1118d226ac53371757267388b23bd10fa6';
+
+/** Resolve the monkey-models auth token the same way Banana's provider does:
+ *  BANANA_MONKEY_TOKEN env var, falling back to the bundled default token. */
+function resolveMonkeyToken(): string {
+  return process.env.BANANA_MONKEY_TOKEN?.trim() || MONKEY_DEFAULT_TOKEN;
+}
+
+/** True unless explicitly disabled. A deploy can set
+ *  SAMWISE_BANANA_OPENROUTER_VIA_MONKEY=false to turn the override off
+ *  without a code change. */
+function openrouterViaMonkeyEnabled(): boolean {
+  return process.env.SAMWISE_BANANA_OPENROUTER_VIA_MONKEY?.trim() !== 'false';
+}
+
+/** Inline JSON config that overrides Banana's `openrouter` provider to route
+ *  through the monkey-models proxy. Passed to `banana serve` as
+ *  BANANA_CONFIG_CONTENT. */
+function bananaConfigContent(): string {
+  return JSON.stringify({
+    $schema: 'https://banana-code.dev/config.json',
+    provider: {
+      openrouter: {
+        options: {
+          baseURL: MONKEY_BASE_URL,
+          apiKey: resolveMonkeyToken(),
+        },
+      },
+    },
+  });
+}
+
 const imageExtension = (mediaType: string): string => {
   if (mediaType === 'image/jpeg') return 'jpg';
   if (mediaType === 'image/png') return 'png';
@@ -259,12 +307,23 @@ class BananaServer {
     this.password = randomBytes(24).toString('hex');
     const bin = resolveBananaBin();
 
+    // Build the spawn env: always a random BANANA_SERVER_PASSWORD, and
+    // (unless disabled) the BANANA_CONFIG_CONTENT override that routes the
+    // `openrouter` provider through the monkey-models proxy.
+    const serveEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      BANANA_SERVER_PASSWORD: this.password,
+    };
+    if (openrouterViaMonkeyEnabled()) {
+      serveEnv.BANANA_CONFIG_CONTENT = bananaConfigContent();
+    }
+
     const child = spawn(
       bin,
       ['serve', '--port', String(this.port), '--hostname', '127.0.0.1'],
       {
         // Never run unsecured: inject a random BANANA_SERVER_PASSWORD.
-        env: { ...process.env, BANANA_SERVER_PASSWORD: this.password },
+        env: serveEnv,
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
