@@ -27,6 +27,11 @@ import {
   activeCodexSessions,
   pruneIdleCodexSessions,
 } from './codex-runner.ts';
+import {
+  shutdownAllBananaSessions,
+  activeBananaSessions,
+  pruneIdleBananaSessions,
+} from './banana-runner.ts';
 import { basename } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -80,7 +85,11 @@ app.get('/api/branch', async (req, res) => {
 });
 
 app.get('/api/live', (_req, res) => {
-  const sessions = [...activeClaudeSessions(), ...activeCodexSessions()];
+  const sessions = [
+    ...activeClaudeSessions(),
+    ...activeCodexSessions(),
+    ...activeBananaSessions(),
+  ];
   res.json({
     sessions: sessions.map((s) => ({
       cli: s.cli,
@@ -195,6 +204,8 @@ type ClientSend = {
   chatId?: string;
   text: string;
   images?: Array<{ mediaType: string; base64: string }>;
+  /** Chosen model id, only used by the Banana runner. */
+  model?: string;
 };
 type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string; chatId?: string };
 type ClientStop = { type: 'stop'; cli: CliKind; repo: string; chatId?: string };
@@ -205,6 +216,8 @@ type ClientSteer = {
   chatId?: string;
   text: string;
   images?: Array<{ mediaType: string; base64: string }>;
+  /** Chosen model id, only used by the Banana runner. */
+  model?: string;
 };
 type ClientToolResponse = {
   type: 'toolResponse';
@@ -367,7 +380,7 @@ wss.on('connection', (ws, req) => {
     generation: number,
     images?: Array<{ mediaType: string; base64: string }>,
   ): Promise<boolean> => {
-    if (!cliKind || !repoPath || cliKind === 'codex') return false;
+    if (!cliKind || !repoPath || cliKind === 'codex' || cliKind === 'banana') return false;
     const watchable = session as ResumeWatchableSession;
     if (!watchable.waitForInitOrExit) return false;
 
@@ -479,8 +492,11 @@ wss.on('connection', (ws, req) => {
         busy = true;
         safeSend({ type: 'turnStart', sessionKey: session.key, sessionId: session.sessionId(), chatId });
         if ('send' in session) {
-          if (msg.cli === 'codex') await (session as any).send(msg.text, msg.images);
-          else {
+          if (msg.cli === 'banana') {
+            await (session as any).send(msg.text, { images: msg.images, model: msg.model });
+          } else if (msg.cli === 'codex') {
+            await (session as any).send(msg.text, msg.images);
+          } else {
             (session as any).send(msg.text, msg.images);
             void retryOnceIfFirstSendStuck(session, msg.text, turnGeneration, msg.images);
           }
@@ -628,12 +644,13 @@ wss.on('connection', (ws, req) => {
         safeSend({ type: 'error', message: 'no session, send hello first' });
         return;
       }
-      // Codex is spawn-per-turn, so block mid-turn sends (would orphan the
-      // running process). Claude/assistant are persistent stdin and accept
-      // steer messages, so we let them through even while a turn is in flight.
-      if (busy && cliKind === 'codex') {
-        console.warn(`[ws#${wsId}] send rejected: codex busy`);
-        safeSend({ type: 'error', message: 'codex is on a turn, wait for the result' });
+      // Codex and Banana are spawn-per-turn, so block mid-turn sends (would
+      // orphan the running process). Claude/assistant are persistent stdin and
+      // accept steer messages, so we let them through even while a turn is in
+      // flight.
+      if (busy && (cliKind === 'codex' || cliKind === 'banana')) {
+        console.warn(`[ws#${wsId}] send rejected: ${cliKind} busy`);
+        safeSend({ type: 'error', message: `${cliKind} is on a turn, wait for the result` });
         return;
       }
       if (!busy) {
@@ -662,8 +679,12 @@ wss.on('connection', (ws, req) => {
       try {
         const session = await sessionPromise;
         if ('send' in session) {
-          // Claude reads images from stdin; Codex gets temp files passed with --image.
-          if (cliKind === 'codex') {
+          // Banana takes a SendOpts object (carries the chosen model). Codex
+          // takes images positionally and its async send must be awaited.
+          // Claude reads images from stdin.
+          if (cliKind === 'banana') {
+            await (session as any).send(msg.text, { images: msg.images, model: msg.model });
+          } else if (cliKind === 'codex') {
             await (session as any).send(msg.text, msg.images);
           } else {
             (session as any).send(msg.text, msg.images);
@@ -700,7 +721,8 @@ server.listen(PORT, () => {
 const idleReaper = setInterval(() => {
   const now = Date.now();
   const pruned = pruneIdleClaudeSessions(IDLE_SESSION_TTL_MS, now)
-    + pruneIdleCodexSessions(IDLE_SESSION_TTL_MS, now);
+    + pruneIdleCodexSessions(IDLE_SESSION_TTL_MS, now)
+    + pruneIdleBananaSessions(IDLE_SESSION_TTL_MS, now);
   if (pruned > 0) console.log(`[idle-reaper] pruned ${pruned} idle session(s)`);
 }, IDLE_REAPER_INTERVAL_MS);
 // Note: deliberately NOT calling idleReaper.unref() — we want this timer to
@@ -729,6 +751,7 @@ const tearDown = () => {
   clearInterval(wsHeartbeat);
   shutdownAllSessions();
   shutdownAllCodexSessions();
+  shutdownAllBananaSessions();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 1500).unref();
 };

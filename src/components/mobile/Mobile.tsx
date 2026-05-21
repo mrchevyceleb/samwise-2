@@ -7,6 +7,7 @@ import {
   InteractiveToolCard,
 } from '../primitives/chat';
 import { Markdown } from '../primitives/Markdown';
+import { BananaModelPicker } from '../primitives/BananaModelPicker';
 import { isInteractiveTool } from '../../hooks/useChat';
 import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
@@ -148,6 +149,7 @@ import type { CommandEntry, LiveSession } from '../../data/types';
 const COMPANION_LABEL: Record<CompanionId, string> = {
   claude: 'claude',
   codex: 'codex',
+  banana: 'banana',
   assistant: 'assistant',
 };
 
@@ -662,6 +664,9 @@ export function MobileConversation({
   onTogglePlanMode,
   planMode = false,
   acceptImages = true,
+  showModelPicker = false,
+  model,
+  onModelChange,
 }: {
   agent?: string;
   repo?: string;
@@ -682,6 +687,10 @@ export function MobileConversation({
   onTogglePlanMode?: (enabled: boolean) => void;
   planMode?: boolean | null;
   acceptImages?: boolean;
+  /** Show the Banana model picker (only when the Banana runner is active). */
+  showModelPicker?: boolean;
+  model?: string;
+  onModelChange?: (id: string) => void;
 }) {
   const [draft, setDraft] = useState('');
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; mediaType: string; base64: string; previewUrl: string }>>([]);
@@ -1087,6 +1096,15 @@ export function MobileConversation({
           flexShrink: 0,
         }}
       >
+        {showModelPicker && onModelChange && model && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+            <BananaModelPicker
+              value={model}
+              onChange={onModelChange}
+              disabled={status === 'streaming'}
+            />
+          </div>
+        )}
         {pendingImages.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
             {pendingImages.map((img) => (

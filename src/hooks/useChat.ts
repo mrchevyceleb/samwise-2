@@ -15,6 +15,24 @@ export type ContextUsage = {
 };
 
 const DEFAULT_WINDOW_TOKENS = 200_000;
+const LARGE_WINDOW_TOKENS = 1_000_000;
+const CODEX_WINDOW_TOKENS = 400_000;
+// Banana runs OpenRouter models; 200k is a sane default that covers most
+// current models (the meter self-grows to 1M if a turn ever reports more).
+const BANANA_WINDOW_TOKENS = 200_000;
+
+function defaultWindowForCli(cli: CompanionId): number {
+  if (cli === 'codex') return CODEX_WINDOW_TOKENS;
+  if (cli === 'banana') return BANANA_WINDOW_TOKENS;
+  return DEFAULT_WINDOW_TOKENS;
+}
+
+function windowForClaudeModel(model: string | undefined): number {
+  if (!model) return DEFAULT_WINDOW_TOKENS;
+  const m = model.toLowerCase();
+  if (m.includes('[1m]') || m.includes('-1m')) return LARGE_WINDOW_TOKENS;
+  return DEFAULT_WINDOW_TOKENS;
+}
 
 let nextId = 1;
 const id = () => `b${nextId++}`;
@@ -270,8 +288,17 @@ export function useChat(opts: {
   enabled: boolean;
   initialMessage?: string | null;
   onInitialMessageSent?: () => void;
+  /** Model id for the Banana runner. Ignored by Claude and Codex. */
+  model?: string;
 }) {
-  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent } = opts;
+  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model } = opts;
+  // Mirror the chosen model into a ref so the WS send/steer paths read the
+  // latest value without re-subscribing. Only the Banana runner uses it.
+  const modelRef = useRef<string | undefined>(model);
+  modelRef.current = model;
+  /** Build the model field for a WS payload — present only for Banana. */
+  const modelField = (): { model?: string } =>
+    cli === 'banana' && modelRef.current ? { model: modelRef.current } : {};
   // Blocks and the conversation key they belong to live in a single state
   // value so they always update atomically. A previous bug stored the key in
   // a ref that was updated synchronously while blocks were updated via
@@ -294,6 +321,7 @@ export function useChat(opts: {
   const pendingActionRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(null);
+  const windowTokensRef = useRef(defaultWindowForCli(cli));
   /** Server-confirmed plan-mode flag. Updated on `ready` and `planModeChanged`.
    *  `null` means the server hasn't told us yet. */
   const [planMode, setPlanModeState] = useState<boolean | null>(null);
@@ -352,7 +380,7 @@ export function useChat(opts: {
           };
         });
         pendingSendRef.current = true;
-        ws.send(JSON.stringify({ type: 'send', chatId, text: initialMessage }));
+        ws.send(JSON.stringify({ type: 'send', chatId, text: initialMessage, ...modelField() }));
       }
     } else if (!initialSendInFlightRef.current) {
       initialMessageRef.current = null;
@@ -396,6 +424,7 @@ export function useChat(opts: {
     setChat({ key: expectedKey, blocks: stored });
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
+    windowTokensRef.current = defaultWindowForCli(cli);
     // Sequence we've already seen (persisted) — replay only what's newer.
     const restoredSeq = readStoredSeq(cli, repo.path, chatId);
     lastSeqRef.current = restoredSeq;
@@ -514,7 +543,7 @@ export function useChat(opts: {
               };
             });
             pendingSendRef.current = true;
-            ws.send(JSON.stringify({ type: 'send', chatId, text: pending }));
+            ws.send(JSON.stringify({ type: 'send', chatId, text: pending, ...modelField() }));
           }
         }
         else if (msg.type === 'planModeChanged') {
@@ -574,21 +603,57 @@ export function useChat(opts: {
               ? prev
               : { key: prev.key, blocks: reduce(prev.blocks, msg.event, turnIdRef) },
           );
-          // Track usage from claude's `result` events to power the context meter.
-          if (msg.event?.type === 'result' && msg.event?.usage) {
-            const u = msg.event.usage as Record<string, number | undefined>;
+          // Codex and Banana are spawn-per-turn runners whose Node-side
+          // runner normalizes usage onto a synthetic `result` event. Claude
+          // (and the Assistant) emit per-call usage on `assistant.message`.
+          const spawnPerTurn = cli === 'codex' || cli === 'banana';
+          if (
+            !spawnPerTurn &&
+            msg.event?.type === 'system' &&
+            msg.event?.subtype === 'init' &&
+            typeof msg.event?.model === 'string'
+          ) {
+            windowTokensRef.current = windowForClaudeModel(msg.event.model);
+          }
+
+          // Track usage from the latest model call rather than summed turn
+          // totals. Claude's `result.usage` can include multiple calls after
+          // tool use, which makes the meter explode; `assistant.message.usage`
+          // is the per-call shape. The Codex/Banana runners emit normalized
+          // usage on their synthetic result event.
+          const usagePayload =
+            !spawnPerTurn &&
+            msg.event?.type === 'assistant' &&
+            msg.event?.message?.usage
+              ? (msg.event.message.usage as Record<string, number | undefined>)
+              : spawnPerTurn &&
+                  msg.event?.type === 'result' &&
+                  msg.event?.usage
+                ? (msg.event.usage as Record<string, number | undefined>)
+                : null;
+
+          if (usagePayload) {
+            const u = usagePayload;
             const input = u.input_tokens ?? 0;
             const cacheRead = u.cache_read_input_tokens ?? 0;
             const cacheCreate = u.cache_creation_input_tokens ?? 0;
             const output = u.output_tokens ?? 0;
             const total = input + cacheRead + cacheCreate;
+            if (
+              !spawnPerTurn &&
+              total > windowTokensRef.current &&
+              windowTokensRef.current < LARGE_WINDOW_TOKENS
+            ) {
+              windowTokensRef.current = LARGE_WINDOW_TOKENS;
+            }
+            const windowTokens = windowTokensRef.current;
             setUsage({
               inputTokens: input,
               cacheReadTokens: cacheRead,
               cacheCreateTokens: cacheCreate,
               outputTokens: output,
-              fraction: Math.min(total / DEFAULT_WINDOW_TOKENS, 1),
-              windowTokens: DEFAULT_WINDOW_TOKENS,
+              fraction: Math.min(total / windowTokens, 1),
+              windowTokens,
             });
           }
         }
@@ -735,7 +800,7 @@ export function useChat(opts: {
     }
     pendingSendRef.current = true;
     setError(null);
-    ws.send(JSON.stringify({ type: 'send', chatId, text, images }));
+    ws.send(JSON.stringify({ type: 'send', chatId, text, images, ...modelField() }));
   };
 
   const freshStart = () => {
@@ -781,7 +846,7 @@ export function useChat(opts: {
     }
     pendingSendRef.current = true;
     setError(null);
-    ws.send(JSON.stringify({ type: 'steer', cli, repo: repo.path, chatId, text, images }));
+    ws.send(JSON.stringify({ type: 'steer', cli, repo: repo.path, chatId, text, images, ...modelField() }));
   };
 
   const reconnect = () => forceReconnectRef.current();

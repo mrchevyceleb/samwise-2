@@ -5,6 +5,7 @@ import type { CompanionId, LiveSession } from '../../data/types';
 const COMPANION_LABEL: Record<CompanionId, string> = {
   claude: 'claude',
   codex: 'codex',
+  banana: 'banana',
   assistant: 'assistant',
 };
 

@@ -14,6 +14,7 @@ export type Companion = {
 export const COMPANIONS: Companion[] = [
   { id: 'claude', name: 'Claude Code', sub: 'full-bodied · tools · 200k window' },
   { id: 'codex', name: 'Codex', sub: 'quick of foot · OpenAI' },
+  { id: 'banana', name: 'Banana', sub: 'OpenRouter' },
   { id: 'assistant', name: 'Assistant', sub: 'tends the hub itself' },
 ];
 

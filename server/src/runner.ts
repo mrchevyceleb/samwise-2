@@ -4,6 +4,7 @@ import type { Readable, Writable } from 'node:stream';
 import { ASSISTANT_HUB_PATH } from './config.ts';
 import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
 import { CodexSession, getOrCreateCodexSession } from './codex-runner.ts';
+import { BananaSession, getOrCreateBananaSession } from './banana-runner.ts';
 import {
   appendEventLog,
   clearEventLog,
@@ -23,7 +24,7 @@ import {
 //   resume failure, drop the stale id, and let the conversation continue from
 //   the new one (don't spawn again — the user's message hasn't been sent yet).
 
-export type CliKind = 'claude' | 'codex' | 'assistant';
+export type CliKind = 'claude' | 'codex' | 'assistant' | 'banana';
 
 export type StreamEvent = unknown;
 
@@ -511,8 +512,8 @@ function removeFromSessionMap(key: string, expected: ClaudeSession): void {
   if (sessions.get(key) === expected) sessions.delete(key);
 }
 
-// Returned by getOrCreateSession — common interface across both runners.
-export type AnySession = ClaudeSession | CodexSession;
+// Returned by getOrCreateSession — common interface across all runners.
+export type AnySession = ClaudeSession | CodexSession | BananaSession;
 
 export async function getOrCreateSession(opts: {
   cli: CliKind;
@@ -522,6 +523,9 @@ export async function getOrCreateSession(opts: {
   const chatId = opts.chatId || 'main';
   if (opts.cli === 'codex') {
     return getOrCreateCodexSession({ repoPath: opts.repoPath, chatId });
+  }
+  if (opts.cli === 'banana') {
+    return getOrCreateBananaSession({ repoPath: opts.repoPath, chatId });
   }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd, chatId);
@@ -631,6 +635,10 @@ export async function freshStart(opts: {
     const { freshStartCodex } = await import('./codex-runner.ts');
     return freshStartCodex({ repoPath: opts.repoPath, chatId });
   }
+  if (opts.cli === 'banana') {
+    const { freshStartBanana } = await import('./banana-runner.ts');
+    return freshStartBanana({ repoPath: opts.repoPath, chatId });
+  }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd, chatId);
   const planMode = await getPlanMode(opts.cli, cwd, chatId);
@@ -651,6 +659,11 @@ export async function dropSession(cli: CliKind, repoPath: string, chatId = 'main
   if (cli === 'codex') {
     const { dropCodexSession } = await import('./codex-runner.ts');
     dropCodexSession({ repoPath, chatId });
+    return;
+  }
+  if (cli === 'banana') {
+    const { dropBananaSession } = await import('./banana-runner.ts');
+    dropBananaSession({ repoPath, chatId });
     return;
   }
   const cwd = cli === 'assistant' ? ASSISTANT_HUB_PATH : repoPath;
@@ -681,6 +694,11 @@ export async function setPlanModeForSession(opts: {
     await setCodexPlanMode({ repoPath: opts.repoPath, chatId, enabled: opts.enabled });
     return;
   }
+  if (opts.cli === 'banana') {
+    const { setBananaPlanMode } = await import('./banana-runner.ts');
+    await setBananaPlanMode({ repoPath: opts.repoPath, chatId, enabled: opts.enabled });
+    return;
+  }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd, chatId);
   await setPlanMode(opts.cli, cwd, opts.enabled, chatId);
@@ -706,6 +724,9 @@ export async function respondToToolForSession(opts: {
   if (opts.cli === 'codex') {
     throw new Error('codex tools do not accept inline replies');
   }
+  if (opts.cli === 'banana') {
+    throw new Error('banana tools do not accept inline replies');
+  }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd, chatId);
   const session = sessions.get(key);
@@ -724,6 +745,11 @@ export async function interruptSession(opts: {
   if (opts.cli === 'codex') {
     const { interruptCodex } = await import('./codex-runner.ts');
     interruptCodex({ repoPath: opts.repoPath, chatId });
+    return;
+  }
+  if (opts.cli === 'banana') {
+    const { interruptBanana } = await import('./banana-runner.ts');
+    interruptBanana({ repoPath: opts.repoPath, chatId });
     return;
   }
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;

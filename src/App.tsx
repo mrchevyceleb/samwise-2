@@ -13,6 +13,7 @@ import { useRepos } from './hooks/useRepos';
 import { useChat } from './hooks/useChat';
 import { useChronicle } from './hooks/useChronicle';
 import { useCommands } from './hooks/useCommands';
+import { readStoredBananaModel } from './components/primitives/BananaModelPicker';
 import { useLive } from './hooks/useLive';
 import { useLiveBranch } from './hooks/useLiveBranch';
 import { useTheme } from './hooks/useTheme';
@@ -39,7 +40,7 @@ function readActive(): ActiveSession | null {
     if (!raw) return null;
     const v = JSON.parse(raw);
     if (
-      v && (v.cli === 'claude' || v.cli === 'codex' || v.cli === 'assistant')
+      v && (v.cli === 'claude' || v.cli === 'codex' || v.cli === 'assistant' || v.cli === 'banana')
       && typeof v.repoPath === 'string'
     ) {
       return {
@@ -67,6 +68,7 @@ function readChronicleCollapsed(): boolean {
 const COMPANION_LABEL: Record<CompanionId, string> = {
   claude: 'Claude Code',
   codex: 'Codex',
+  banana: 'Banana',
   assistant: 'Assistant',
 };
 
@@ -118,6 +120,9 @@ export default function App() {
   const [chatId, setChatId] = useState<string>(initialActive?.chatId ?? 'main');
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
+  // Chosen Banana model. Defaults to the last pick (initial default
+  // monkey/silverback). Only the Banana runner sends it.
+  const [bananaModel, setBananaModel] = useState<string>(readStoredBananaModel);
 
   const chat = useChat({
     repo,
@@ -126,6 +131,7 @@ export default function App() {
     enabled: view === 'conversation' && !!repo,
     initialMessage: pendingFirstMessage,
     onInitialMessageSent: () => setPendingFirstMessage(null),
+    model: bananaModel,
   });
 
   // Once repos load, bind the restore-target path to a real Repo object.
@@ -311,6 +317,9 @@ export default function App() {
             onTogglePlanMode={chat.setPlanMode}
             planMode={chat.planMode}
             acceptImages={true}
+            showModelPicker={companion === 'banana'}
+            model={bananaModel}
+            onModelChange={setBananaModel}
           />
         )}
         <MobileChronicleSheet
@@ -388,6 +397,9 @@ export default function App() {
             onTogglePlanMode={chat.setPlanMode}
             planMode={chat.planMode}
             acceptImages={true}
+            showModelPicker={companion === 'banana'}
+            model={bananaModel}
+            onModelChange={setBananaModel}
           />
         )}
       </main>

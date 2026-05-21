@@ -9,6 +9,7 @@ import {
 } from '../primitives/chat';
 import { isInteractiveTool } from '../../hooks/useChat';
 import { Markdown } from '../primitives/Markdown';
+import { BananaModelPicker } from '../primitives/BananaModelPicker';
 import type { ChatBlock, CommandEntry } from '../../data/types';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
@@ -32,6 +33,10 @@ type ConversationProps = {
   onTogglePlanMode?: (enabled: boolean) => void;
   planMode?: boolean | null;
   acceptImages?: boolean;
+  /** Show the Banana model picker (only when the Banana runner is active). */
+  showModelPicker?: boolean;
+  model?: string;
+  onModelChange?: (id: string) => void;
 };
 
 const statusToneByStatus: Record<Status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -73,6 +78,9 @@ export function Conversation({
   onTogglePlanMode,
   planMode = false,
   acceptImages = true,
+  showModelPicker = false,
+  model,
+  onModelChange,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -203,6 +211,13 @@ export function Conversation({
               >
                 {planMode ? 'plan mode · on' : 'plan mode · off'}
               </button>
+            )}
+            {showModelPicker && onModelChange && model && (
+              <BananaModelPicker
+                value={model}
+                onChange={onModelChange}
+                disabled={status === 'streaming'}
+              />
             )}
           </div>
           {(onBack || onFreshStart || usage || (onStop && status === 'streaming')) && (
@@ -402,13 +417,15 @@ function ContextMeter({
   inputTokens,
   windowTokens,
 }: { fraction: number; inputTokens: number; windowTokens: number }) {
+  const overflow = inputTokens > windowTokens;
+  const shownTokens = Math.min(inputTokens, windowTokens);
   const tone =
     fraction < 0.5 ? 'var(--moss)'
     : fraction < 0.8 ? 'var(--gold)'
     : 'var(--ember)';
   return (
     <span
-      title={`${inputTokens.toLocaleString()} of ${windowTokens.toLocaleString()} tokens used`}
+      title={`${overflow ? `${inputTokens.toLocaleString()} reported, capped at ` : ''}${shownTokens.toLocaleString()} of ${windowTokens.toLocaleString()} tokens used`}
       style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}
     >
       <span
@@ -432,7 +449,7 @@ function ContextMeter({
         />
       </span>
       <span className="sw-folio" style={{ fontStyle: 'italic', whiteSpace: 'nowrap' }}>
-        {formatTokens(inputTokens)} / {formatTokens(windowTokens)}
+        {formatTokens(shownTokens)}{overflow ? '+' : ''} / {formatTokens(windowTokens)}
       </span>
     </span>
   );
