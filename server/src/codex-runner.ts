@@ -27,10 +27,17 @@ let nextSyntheticId = 1;
 const synth = (prefix: string) => `${prefix}_${nextSyntheticId++}`;
 type ChatImage = { mediaType: string; base64: string };
 type ToolUseBlock = { index: number; toolUseId: string };
+type CodexUsage = {
+  input_tokens: number;
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
+  output_tokens: number;
+};
 type CodexTurnState = {
   messageId: string;
   nextBlockIndex: number;
   toolUseBlocks: Map<string, ToolUseBlock>;
+  usage: CodexUsage | null;
 };
 
 const CODEX_TURN_PREAMBLE = [
@@ -48,6 +55,15 @@ const imageExtension = (mediaType: string): string => {
   const subtype = mediaType.split('/')[1]?.split('+')[0] ?? 'img';
   return subtype.replace(/[^a-z0-9]/gi, '') || 'img';
 };
+
+const CODEX_TRACING_LINE = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+[\w_]+(?:::[\w_]+)*:/;
+
+function isIgnorableCodexStderr(line: string): boolean {
+  if (/Reading additional input from stdin/i.test(line)) return true;
+  if (/failed to record rollout items/i.test(line)) return true;
+  if (/write_stdin failed: stdin is closed for this session/i.test(line)) return true;
+  return CODEX_TRACING_LINE.test(line);
+}
 
 export class CodexSession {
   readonly key: string;
@@ -246,6 +262,7 @@ export class CodexSession {
       messageId: synth('msg'),
       nextBlockIndex: 0,
       toolUseBlocks: new Map(),
+      usage: null,
     };
     const stderrChunks: string[] = [];
 
@@ -285,13 +302,10 @@ export class CodexSession {
       // immediately retries on its own). Filter all tracing-format lines and
       // a couple of known benign warnings; surface only true unstructured
       // errors.
-      const tracingLine = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z\s+(ERROR|WARN|INFO|DEBUG|TRACE)\s+[\w_]+(?:::[\w_]+)*:/;
       for (const raw of chunk.split('\n')) {
         const line = raw.trim();
         if (!line) continue;
-        if (/Reading additional input from stdin/i.test(line)) continue;
-        if (/failed to record rollout items/i.test(line)) continue;
-        if (tracingLine.test(line)) continue;
+        if (isIgnorableCodexStderr(line)) continue;
         stderrChunks.push(line);
         this.emit({ type: 'error', message: line });
       }
@@ -307,11 +321,13 @@ export class CodexSession {
       cleanupImages();
       this.closeDanglingToolBlocks(turnState, code, stderrChunks.join('\n').trim());
       // Emit a result event so the front-end flips status back to 'ready'.
+      // Forward normalized Codex usage so the context meter has sane numbers.
       this.emitClaudeEvent({
         type: 'result',
         subtype: code === 0 ? 'success' : 'error_during_execution',
         is_error: code !== 0,
         session_id: this.threadId ?? undefined,
+        usage: turnState.usage ?? undefined,
       });
       if (this.threadId) {
         await setSessionId('codex', this.cwd, this.threadId, this.chatId);
@@ -490,7 +506,27 @@ export class CodexSession {
       return;
     }
 
-    // Other event types (turn.completed, etc.) — ignore.
+    // Capture per-turn token usage from `turn.completed` so the front-end
+    // context meter has real numbers instead of leftover Claude figures.
+    if (ev.type === 'turn.completed' && ev.usage && typeof ev.usage === 'object') {
+      const u = ev.usage as Record<string, number | undefined>;
+      const input = Number(u.input_tokens ?? 0);
+      const cached = Number(u.cached_input_tokens ?? 0);
+      const output = Number(u.output_tokens ?? 0);
+      const effectiveInput = cached > 0 && cached < input ? input - cached : input;
+      state.usage = {
+        // Codex reports huge cumulative cache-read counts. For the context
+        // meter, show the effective fresh input instead of reconstructing the
+        // full cache history and producing impossible multi-million totals.
+        input_tokens: Math.max(0, effectiveInput),
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        output_tokens: output,
+      };
+      return;
+    }
+
+    // Other event types — ignore.
   }
 
   private closeDanglingToolBlocks(
