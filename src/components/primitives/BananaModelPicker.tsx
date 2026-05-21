@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 // useChat -> the WS send payload -> BananaSession.send -> sdk.session.prompt.
 
 export const BANANA_MODEL_STORAGE_KEY = 'samwise-2:banana-model';
+export const BANANA_MODEL_FAVORITES_STORAGE_KEY = 'banana-model-favorites';
 export const DEFAULT_BANANA_MODEL = 'monkey/silverback';
 
 type MonkeyTier = { id: string; label: string; blurb: string };
@@ -70,6 +71,28 @@ function writeStoredBananaModel(id: string): void {
   }
 }
 
+/** Read the persisted set of favorited OpenRouter model ids (full `openrouter/<id>` form). */
+function readStoredBananaFavorites(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(BANANA_MODEL_FAVORITES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredBananaFavorites(ids: string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(BANANA_MODEL_FAVORITES_STORAGE_KEY, JSON.stringify(ids));
+  } catch {
+    // storage unavailable — keep going, just no persistence
+  }
+}
+
 /** Human label for a model id. Monkey tiers get their nice name; OpenRouter
  *  ids show the bare model id after the `openrouter/` prefix. */
 export function labelForBananaModel(id: string): string {
@@ -94,6 +117,8 @@ export function BananaModelPicker({ value, onChange, disabled = false }: Props) 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [orModels, setOrModels] = useState<OpenRouterModel[]>(openRouterCache ?? []);
+  // Favorited OpenRouter model ids (full `openrouter/<id>` form), loaded on mount.
+  const [favorites, setFavorites] = useState<string[]>(() => readStoredBananaFavorites());
   // 'down' (default) or 'up' when there is not enough room below the trigger.
   const [dropUp, setDropUp] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -141,6 +166,33 @@ export function BananaModelPicker({ value, onChange, disabled = false }: Props) 
     setOpen(false);
     setQuery('');
   };
+
+  // Fast membership lookup for the star fill state.
+  const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+
+  // Toggle a model's favorite state and persist immediately. The id is the
+  // full `openrouter/<model.id>` form, matching what `pick` selects.
+  const toggleFavorite = (id: string) => {
+    setFavorites((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      writeStoredBananaFavorites(next);
+      return next;
+    });
+  };
+
+  // The favorited models that still exist in the current OpenRouter roster,
+  // resolved to {id, name} for display. Ordered by when they were favorited.
+  const favoriteModels = useMemo(() => {
+    if (favorites.length === 0 || orModels.length === 0) return [];
+    const byId = new Map(orModels.map((m) => [m.id, m]));
+    return favorites
+      .map((favId) => {
+        const bare = favId.startsWith('openrouter/') ? favId.slice('openrouter/'.length) : favId;
+        const model = byId.get(bare);
+        return model ? { fullId: favId, name: model.name } : null;
+      })
+      .filter((x): x is { fullId: string; name: string } => x !== null);
+  }, [favorites, orModels]);
 
   // Open the panel, choosing the drop direction so it is never clipped below
   // the viewport. If the room under the trigger is smaller than the panel and
@@ -272,6 +324,92 @@ export function BananaModelPicker({ value, onChange, disabled = false }: Props) 
             })}
           </div>
 
+          {favoriteModels.length > 0 && (
+            <div
+              style={{
+                borderTop: '1px solid var(--rule-soft)',
+                padding: '8px 12px 4px',
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: 'var(--serif-display)',
+                  fontStyle: 'italic',
+                  fontSize: 11.5,
+                  color: 'var(--ink-faint)',
+                  marginBottom: 6,
+                  textTransform: 'lowercase',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                favorites
+              </div>
+              {favoriteModels.map((fav) => {
+                const active = fav.fullId === value;
+                return (
+                  <div
+                    key={fav.fullId}
+                    style={{
+                      display: 'flex',
+                      width: '100%',
+                      alignItems: 'center',
+                      gap: 4,
+                      background: active ? 'var(--gold)' : 'transparent',
+                      borderRadius: 7,
+                      transition: 'background 0.1s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!active) e.currentTarget.style.background = 'var(--rule-soft)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!active) e.currentTarget.style.background = 'transparent';
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => pick(fav.fullId)}
+                      title={fav.fullId}
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        background: 'transparent',
+                        color: active ? 'var(--vellum)' : 'var(--ink-soft)',
+                        border: 'none',
+                        padding: '5px 9px',
+                        cursor: 'pointer',
+                        fontSize: 12.5,
+                        textAlign: 'left',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {fav.name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleFavorite(fav.fullId)}
+                      title="remove from favorites"
+                      aria-label="remove from favorites"
+                      style={{
+                        flex: '0 0 auto',
+                        background: 'transparent',
+                        color: active ? 'var(--vellum)' : 'var(--gold)',
+                        border: 'none',
+                        padding: '5px 9px',
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        lineHeight: 1,
+                      }}
+                    >
+                      ★
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           <div
             style={{
               borderTop: '1px solid var(--rule-soft)',
@@ -342,26 +480,17 @@ export function BananaModelPicker({ value, onChange, disabled = false }: Props) 
             {filtered.map((m) => {
               const id = `openrouter/${m.id}`;
               const active = id === value;
+              const isFavorite = favoriteSet.has(id);
               return (
-                <button
+                <div
                   key={m.id}
-                  type="button"
-                  onClick={() => pick(id)}
-                  title={m.id}
                   style={{
-                    display: 'block',
+                    display: 'flex',
                     width: '100%',
+                    alignItems: 'center',
+                    gap: 4,
                     background: active ? 'var(--gold)' : 'transparent',
-                    color: active ? 'var(--vellum)' : 'var(--ink-soft)',
-                    border: 'none',
                     borderRadius: 7,
-                    padding: '5px 9px',
-                    cursor: 'pointer',
-                    fontSize: 12.5,
-                    textAlign: 'left',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
                     transition: 'background 0.1s ease',
                   }}
                   onMouseEnter={(e) => {
@@ -371,8 +500,53 @@ export function BananaModelPicker({ value, onChange, disabled = false }: Props) 
                     if (!active) e.currentTarget.style.background = 'transparent';
                   }}
                 >
-                  {m.name}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => pick(id)}
+                    title={m.id}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      background: 'transparent',
+                      color: active ? 'var(--vellum)' : 'var(--ink-soft)',
+                      border: 'none',
+                      padding: '5px 9px',
+                      cursor: 'pointer',
+                      fontSize: 12.5,
+                      textAlign: 'left',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {m.name}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => toggleFavorite(id)}
+                    title={isFavorite ? 'remove from favorites' : 'add to favorites'}
+                    aria-label={isFavorite ? 'remove from favorites' : 'add to favorites'}
+                    aria-pressed={isFavorite}
+                    style={{
+                      flex: '0 0 auto',
+                      background: 'transparent',
+                      color: active
+                        ? 'var(--vellum)'
+                        : isFavorite
+                          ? 'var(--gold)'
+                          : 'var(--ink-faint)',
+                      border: 'none',
+                      padding: '5px 9px',
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      lineHeight: 1,
+                      opacity: isFavorite ? 1 : 0.55,
+                      transition: 'opacity 0.1s ease, color 0.1s ease',
+                    }}
+                  >
+                    {isFavorite ? '★' : '☆'}
+                  </button>
+                </div>
               );
             })}
           </div>
