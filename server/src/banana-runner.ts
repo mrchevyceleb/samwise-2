@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, readlink, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,6 +15,7 @@ import {
   compactEventLog,
   loadEventLogSync,
 } from './event-log-store.ts';
+import { BANANA_COMMANDS_DIR } from './config.ts';
 
 const EVENT_BUFFER_SIZE = 2000;
 
@@ -69,6 +70,78 @@ function resolveBananaBin(): string {
   const brewPath = '/opt/homebrew/bin/banana';
   if (existsSync(brewPath)) return brewPath;
   return 'banana';
+}
+
+const BANANA_GLOBAL_COMMANDS_LINK = join(homedir(), '.config', 'banana', 'commands');
+
+async function ensureBananaCommandsLinked(): Promise<void> {
+  try {
+    const source = await lstat(BANANA_COMMANDS_DIR).catch(() => null);
+    if (!source?.isDirectory()) return;
+
+    await mkdir(dirname(BANANA_GLOBAL_COMMANDS_LINK), { recursive: true });
+    const existing = await lstat(BANANA_GLOBAL_COMMANDS_LINK).catch(() => null);
+    if (!existing) {
+      await symlink(BANANA_COMMANDS_DIR, BANANA_GLOBAL_COMMANDS_LINK, 'dir');
+      console.log(`[banana] linked Banana commands from ${BANANA_COMMANDS_DIR}`);
+      return;
+    }
+
+    if (existing.isSymbolicLink()) {
+      const target = await readlink(BANANA_GLOBAL_COMMANDS_LINK).catch(() => '');
+      const resolvedTarget = isAbsolute(target)
+        ? resolve(target)
+        : resolve(dirname(BANANA_GLOBAL_COMMANDS_LINK), target);
+      if (resolvedTarget === resolve(BANANA_COMMANDS_DIR)) return;
+      await unlink(BANANA_GLOBAL_COMMANDS_LINK);
+      await symlink(BANANA_COMMANDS_DIR, BANANA_GLOBAL_COMMANDS_LINK, 'dir');
+      console.log(`[banana] relinked Banana commands from ${BANANA_COMMANDS_DIR}`);
+      return;
+    }
+
+    if (existing.isDirectory()) {
+      const entries = await readdir(BANANA_GLOBAL_COMMANDS_LINK).catch(() => []);
+      if (entries.length === 0) {
+        await rm(BANANA_GLOBAL_COMMANDS_LINK, { recursive: true, force: true });
+        await symlink(BANANA_COMMANDS_DIR, BANANA_GLOBAL_COMMANDS_LINK, 'dir');
+        console.log(`[banana] linked Banana commands from ${BANANA_COMMANDS_DIR}`);
+        return;
+      }
+    }
+
+    console.warn(`[banana] ${BANANA_GLOBAL_COMMANDS_LINK} exists, leaving it unchanged`);
+  } catch (err) {
+    console.warn(`[banana] could not link Banana commands: ${(err as Error).message}`);
+  }
+}
+
+type BananaSlashCommand = {
+  command: string;
+  arguments: string;
+};
+
+async function findBananaCommandName(input: string): Promise<string | null> {
+  try {
+    const files = await readdir(BANANA_COMMANDS_DIR, { withFileTypes: true });
+    const lower = input.toLowerCase();
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith('.md')) continue;
+      const command = file.name.slice(0, -3);
+      if (command.toLowerCase() === lower) return command;
+    }
+  } catch {}
+  return null;
+}
+
+async function parseBananaSlashCommand(text: string): Promise<BananaSlashCommand | null> {
+  const match = text.trimStart().match(/^\/([A-Za-z0-9][A-Za-z0-9_-]*)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+  const command = await findBananaCommandName(match[1]);
+  if (!command) return null;
+  return {
+    command,
+    arguments: match[2] ?? '',
+  };
 }
 
 // The persistent serve process has no internal turn timeout. If its backend
@@ -897,6 +970,7 @@ class BananaServer {
   }
 
   private async start(inlineConfig: string | null, configSignature: string): Promise<void> {
+    await ensureBananaCommandsLinked();
     // New serve incarnation: bump the generation so any subscription loops
     // left over from a prior serve see the change and exit cleanly.
     this.serveGeneration += 1;
@@ -1489,6 +1563,7 @@ export class BananaSession {
       sawToolUse: false,
     };
 
+    let requestKind: 'prompt' | 'command' = 'prompt';
     try {
       const server = BananaServer.get();
       await server.ensure(this.cwd);
@@ -1548,6 +1623,8 @@ export class BananaSession {
       // accepted, NOT when the turn finishes. We await it only to surface
       // request-level errors; turn completion is driven by session.status idle.
       const model = parseModel(sendOpts.model);
+      const slashCommand = await parseBananaSlashCommand(text);
+      requestKind = slashCommand ? 'command' : 'prompt';
       const promptParams: Record<string, unknown> = {
         sessionID: this.threadId,
         parts: [...fileParts, { type: 'text', text }],
@@ -1556,7 +1633,18 @@ export class BananaSession {
 
       const thisTurn = this.turn;
       const settle = new Promise<void>((resolve) => { this.turnDone = resolve; });
-      await sdk.session.prompt(promptParams as any);
+      if (slashCommand) {
+        const commandParams: Record<string, unknown> = {
+          sessionID: this.threadId,
+          command: slashCommand.command,
+          arguments: slashCommand.arguments,
+        };
+        if (sendOpts.model) commandParams.model = sendOpts.model;
+        if (fileParts.length) commandParams.parts = fileParts;
+        await sdk.session.command(commandParams as any);
+      } else {
+        await sdk.session.prompt(promptParams as any);
+      }
       // The prompt was accepted by the server. Mark THIS turn so a
       // session.status idle is now honored as completion (guarded against the
       // turn having already settled and been replaced). Until this flips, a
@@ -1572,8 +1660,8 @@ export class BananaSession {
       this.emit({
         type: 'error',
         message: restartServe
-          ? `banana prompt failed: local Banana server connection failed, restarting for the next turn (${message})`
-          : `banana prompt failed: ${message}`,
+          ? `banana ${requestKind} failed: local Banana server connection failed, restarting for the next turn (${message})`
+          : `banana ${requestKind} failed: ${message}`,
       });
       this.emitClaudeEvent({
         type: 'result',

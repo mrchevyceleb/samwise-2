@@ -36,6 +36,7 @@ export type CommandEntry = {
 export type CommandCatalog = {
   claude: CommandEntry[];
   codex: CommandEntry[];
+  banana: CommandEntry[];
 };
 
 // Re-export for places that use it — kept here since it's a UI-facing type.

@@ -272,7 +272,10 @@ export default function App() {
     ? `${repo.name}${branchForLabel ? ` · ${branchForLabel}` : ''}`
     : 'just chatting';
   const commandPrefix = companion === 'codex' ? '$' : '/';
-  const activeCommands = companion === 'codex' ? commands.codex : commands.claude;
+  const activeCommands =
+    companion === 'codex' ? commands.codex
+    : companion === 'banana' ? commands.banana
+    : commands.claude;
 
   const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
 
