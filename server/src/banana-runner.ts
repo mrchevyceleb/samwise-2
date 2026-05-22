@@ -682,6 +682,10 @@ function parseModel(modelId?: string): { providerID: string; modelID: string } |
   };
 }
 
+function isPromptTransportFailure(message: string): boolean {
+  return /fetch failed|ECONNREFUSED|ECONNRESET|EPIPE|UND_ERR|socket|terminated/i.test(message);
+}
+
 // Plan ruleset, mirroring banana-cli-2 run.ts:359-375. Sent on session create
 // so plan mode constrains the session to producing a plan (questions and
 // plan enter/exit denied). Non-plan turns auto-approve permission requests.
@@ -874,6 +878,11 @@ class BananaServer {
       directory: cwd,
       headers: { Authorization: this.authHeader() },
     });
+  }
+
+  notePromptTransportFailure(reason: string): void {
+    console.warn(`[banana] prompt transport failure, restarting serve: ${reason}`);
+    this.markDead();
   }
 
   private authHeader(): string {
@@ -1550,7 +1559,14 @@ export class BananaSession {
       await settle;
     } catch (e) {
       this.clearWatchdog();
-      this.emit({ type: 'error', message: `banana prompt failed: ${(e as Error).message}` });
+      const message = errorMessage(e);
+      const restartServe = isPromptTransportFailure(message);
+      this.emit({
+        type: 'error',
+        message: restartServe
+          ? `banana prompt failed: local Banana server connection failed, restarting for the next turn (${message})`
+          : `banana prompt failed: ${message}`,
+      });
       this.emitClaudeEvent({
         type: 'result',
         subtype: 'error_during_execution',
@@ -1559,6 +1575,9 @@ export class BananaSession {
         usage: this.turn?.usage ?? undefined,
       });
       this.endTurn();
+      if (restartServe) {
+        BananaServer.get().notePromptTransportFailure(message);
+      }
     }
   }
 
