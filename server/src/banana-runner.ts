@@ -18,6 +18,13 @@ import {
 
 const EVENT_BUFFER_SIZE = 2000;
 
+function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  try { child.kill(signal); } catch {}
+  if (child.pid) {
+    try { process.kill(-child.pid, signal); } catch {}
+  }
+}
+
 // ── Banana runner v2 ─────────────────────────────────────────────────────
 //
 // v1 spawned `banana run --format json` once per turn: each turn paid a
@@ -790,10 +797,10 @@ class BananaServer {
         this.dead = true;
         this.restartAt = Date.now() + 2_000;
       }
-      try { this.child?.kill('SIGTERM'); } catch {}
       const stuckChild = this.child;
+      if (stuckChild) terminateProcessTree(stuckChild, 'SIGTERM');
       if (stuckChild) {
-        setTimeout(() => { try { stuckChild.kill('SIGKILL'); } catch {} }, 2_000).unref?.();
+        setTimeout(() => terminateProcessTree(stuckChild, 'SIGKILL'), 2_000).unref?.();
       }
       this.child = null;
       this.client = null;
@@ -815,10 +822,10 @@ class BananaServer {
     this.stopAllSubscriptions();
     const orphans = Array.from(new Set(this.routes.values()));
     this.routes.clear();
-    try { this.child?.kill('SIGTERM'); } catch {}
     const stuckChild = this.child;
+    if (stuckChild) terminateProcessTree(stuckChild, 'SIGTERM');
     if (stuckChild) {
-      setTimeout(() => { try { stuckChild.kill('SIGKILL'); } catch {} }, 2_000).unref?.();
+      setTimeout(() => terminateProcessTree(stuckChild, 'SIGKILL'), 2_000).unref?.();
     }
     this.child = null;
     this.client = null;
@@ -919,6 +926,7 @@ class BananaServer {
       {
         // Never run unsecured: inject a random BANANA_SERVER_PASSWORD.
         env: serveEnv,
+        detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
@@ -1038,10 +1046,10 @@ class BananaServer {
     // Stop and abort every per-directory subscription loop.
     this.stopAllSubscriptions();
     this.restartAt = Date.now() + 2_000;
-    try { this.child?.kill('SIGTERM'); } catch {}
     const stuckChild = this.child;
+    if (stuckChild) terminateProcessTree(stuckChild, 'SIGTERM');
     if (stuckChild) {
-      setTimeout(() => { try { stuckChild.kill('SIGKILL'); } catch {} }, 2_000).unref?.();
+      setTimeout(() => terminateProcessTree(stuckChild, 'SIGKILL'), 2_000).unref?.();
     }
     this.child = null;
     this.client = null;
