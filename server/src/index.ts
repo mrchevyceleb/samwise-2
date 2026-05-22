@@ -30,6 +30,7 @@ import {
 import {
   shutdownAllBananaSessions,
   activeBananaSessions,
+  listBananaOpenRouterModels,
   pruneIdleBananaSessions,
 } from './banana-runner.ts';
 import { basename } from 'node:path';
@@ -101,6 +102,14 @@ app.get('/api/live', (_req, res) => {
       lastActivityAt: s.lastActivityAt,
     })),
   });
+});
+
+app.get('/api/banana/models', async (_req, res) => {
+  try {
+    res.json({ data: await listBananaOpenRouterModels() });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
 });
 
 app.get('/api/chronicle', async (_req, res) => {

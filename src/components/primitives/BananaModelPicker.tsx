@@ -20,16 +20,23 @@ const MONKEY_TIERS: MonkeyTier[] = [
 
 type OpenRouterModel = { id: string; name: string };
 
-// Module-level cache so the OpenRouter list is fetched once per page load.
+const OPENROUTER_MODELS_URL = '/api/banana/models';
+const OPENROUTER_CACHE_TTL_MS = 60 * 1000;
+
+// Brief module-level cache so a long-lived tab tracks OpenRouter adds/removes
+// without refetching on every picker open.
 let openRouterCache: OpenRouterModel[] | null = null;
+let openRouterCacheAt = 0;
 let openRouterInFlight: Promise<OpenRouterModel[]> | null = null;
 
 async function fetchOpenRouterModels(): Promise<OpenRouterModel[]> {
-  if (openRouterCache) return openRouterCache;
+  const cached = openRouterCache;
+  const fresh = cached !== null && Date.now() - openRouterCacheAt < OPENROUTER_CACHE_TTL_MS;
+  if (fresh) return cached;
   if (openRouterInFlight) return openRouterInFlight;
   openRouterInFlight = (async () => {
     try {
-      const res = await fetch('https://openrouter.ai/api/v1/models');
+      const res = await fetch(OPENROUTER_MODELS_URL);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const list: OpenRouterModel[] = Array.isArray(json?.data)
@@ -38,12 +45,14 @@ async function fetchOpenRouterModels(): Promise<OpenRouterModel[]> {
             .map((m: any) => ({ id: m.id as string, name: (m.name as string) || (m.id as string) }))
         : [];
       // Only cache a non-empty result. A transient failure (offline, rate
-      // limit) must not poison the cache for the rest of the page load.
-      if (list.length > 0) openRouterCache = list;
-      return list;
+      // limit) must not poison the cache.
+      if (list.length > 0) {
+        openRouterCache = list;
+        openRouterCacheAt = Date.now();
+      }
+      return list.length > 0 ? list : openRouterCache ?? [];
     } catch {
-      // Leave the cache empty so the next panel-open retries the fetch.
-      return [];
+      return openRouterCache ?? [];
     } finally {
       openRouterInFlight = null;
     }
@@ -132,9 +141,12 @@ export function BananaModelPicker({ value, onChange, disabled = false }: Props) 
   const [dropUp, setDropUp] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Fetch the OpenRouter list once when the panel first opens.
+  // Fetch the OpenRouter list when the panel opens and the short cache has
+  // expired, so add/remove changes show up without a full page reload.
   useEffect(() => {
-    if (!open || orModels.length > 0) return;
+    if (!open) return;
+    const fresh = openRouterCache !== null && Date.now() - openRouterCacheAt < OPENROUTER_CACHE_TTL_MS;
+    if (fresh && orModels.length > 0) return;
     let alive = true;
     void fetchOpenRouterModels().then((list) => {
       if (alive) setOrModels(list);
