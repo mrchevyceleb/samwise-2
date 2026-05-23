@@ -1585,6 +1585,8 @@ export class BananaSession {
     };
 
     let requestKind: 'prompt' | 'command' = 'prompt';
+    let thisTurn: BananaTurnState | null = null;
+    let settle: Promise<void> | null = null;
     try {
       const server = BananaServer.get();
       await server.ensure(this.cwd);
@@ -1652,8 +1654,8 @@ export class BananaSession {
       };
       if (model) promptParams.model = model;
 
-      const thisTurn = this.turn;
-      const settle = new Promise<void>((resolve) => { this.turnDone = resolve; });
+      thisTurn = this.turn;
+      settle = new Promise<void>((resolve) => { this.turnDone = resolve; });
       if (slashCommand) {
         const commandParams: Record<string, unknown> = {
           sessionID: this.threadId,
@@ -1678,6 +1680,17 @@ export class BananaSession {
       this.clearWatchdog();
       const message = errorMessage(e);
       const restartServe = isPromptTransportFailure(message);
+      if (
+        restartServe &&
+        this.turn === thisTurn &&
+        thisTurn &&
+        this.turnHasServerActivity(thisTurn)
+      ) {
+        console.warn(`[banana] ${requestKind} transport ended after stream activity; keeping turn alive (${message})`);
+        this.bumpWatchdog();
+        if (settle) await settle;
+        return;
+      }
       this.emit({
         type: 'error',
         message: restartServe
@@ -1890,6 +1903,20 @@ export class BananaSession {
       if (rec.started && !rec.closed) return true;
     }
     return false;
+  }
+
+  private turnHasServerActivity(state: BananaTurnState): boolean {
+    return (
+      state.promptAccepted ||
+      state.messageStarted ||
+      state.anchorMessageId !== null ||
+      state.parts.size > 0 ||
+      state.tools.size > 0 ||
+      state.bufferedDeltas.size > 0 ||
+      state.partMessageIds.size > 0 ||
+      state.sawToolUse ||
+      state.usage !== null
+    );
   }
 
   /** Auto-reply to a permission request: `reject` in plan mode, `once` otherwise. */
