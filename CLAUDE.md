@@ -138,8 +138,9 @@ Scans these parents for first-level dirs containing `.git`:
 - `~/samwise/Personal-Apps`
 - `~/Documents/PERSONAL-PROJECTS`
 
-Plus pins `ASSISTANT_HUB_PATH` first (the OneDrive-Personal/.../ASSISTANT-HUB
-path). Each repo gets its `name`, `branch`, and `hub` (parent dir basename).
+Plus pins `ASSISTANT_HUB_PATH` first (defaults to `~/ASSISTANT-HUB`, the
+Syncthing-managed local copy; override via `ELROND_WORKSPACE_PATH`). Each repo
+gets its `name`, `branch`, and `hub` (parent dir basename).
 
 ### Chronicle (`server/src/chronicle.ts`)
 
