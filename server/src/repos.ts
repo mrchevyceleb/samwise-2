@@ -9,6 +9,7 @@ import {
   REPO_SCAN_HUB_PATHS,
   IGNORED_HUB_NAMES,
 } from './config.ts';
+import { readStars } from './stars.ts';
 
 const exec = promisify(execFile);
 
@@ -18,6 +19,7 @@ export type DiscoveredRepo = {
   branch?: string;
   hub: string; // "Work", "Side projects", "The Hub", etc.
   pinned?: boolean;
+  starred?: boolean;
   isAssistantHub?: boolean;
 };
 
@@ -39,6 +41,15 @@ async function scanParent(parent: string, hub: string): Promise<DiscoveredRepo[]
     const path = join(parent, e.name);
     const gitDir = join(path, '.git');
     if (!existsSync(gitDir)) continue;
+    // Worktrees have `.git` as a regular file (containing `gitdir: …`), not a
+    // directory. They clutter the Threshold so skip them; the main repo is
+    // already listed elsewhere.
+    try {
+      const s = await stat(gitDir);
+      if (!s.isDirectory()) continue;
+    } catch {
+      continue;
+    }
     const branch = await gitBranch(path);
     out.push({ path, name: e.name, branch, hub });
   }
@@ -79,7 +90,14 @@ export async function discoverRepos(): Promise<DiscoveredRepo[]> {
     }
   }
 
-  // Stat for mtime to roughly sort by recent activity.
+  // Apply stars (a flat list of paths Matt has pinned to the top).
+  const stars = await readStars();
+  for (const r of all) {
+    if (stars.has(r.path)) r.starred = true;
+  }
+
+  // Stat for mtime to roughly sort by recent activity. Starred repos float to
+  // the top regardless of mtime.
   const withMtime = await Promise.all(
     all.map(async (r) => {
       try {
@@ -90,7 +108,12 @@ export async function discoverRepos(): Promise<DiscoveredRepo[]> {
       }
     }),
   );
-  withMtime.sort((a, b) => b.mtime - a.mtime);
+  withMtime.sort((a, b) => {
+    const aStar = a.r.starred ? 1 : 0;
+    const bStar = b.r.starred ? 1 : 0;
+    if (aStar !== bStar) return bStar - aStar;
+    return b.mtime - a.mtime;
+  });
 
   return withMtime.map((x) => x.r);
 }

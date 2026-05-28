@@ -20,6 +20,7 @@ export type Repo = {
   branch?: string;
   hub?: string;        // grouping label (e.g., "Personal-Apps", "The Hub")
   pinned?: boolean;
+  starred?: boolean;   // user-pinned via the threshold star toggle
   isAssistantHub?: boolean;
   // Mock/UI-only flags below — synthesized from chronicle data later.
   recent?: string;

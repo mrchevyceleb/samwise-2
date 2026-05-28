@@ -11,6 +11,14 @@ import {
   type Hub,
 } from '../../data/mock';
 
+type AssistantEngine = 'claude' | 'codex' | 'banana';
+
+const ASSISTANT_ENGINES: { id: AssistantEngine; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'banana', label: 'Banana' },
+];
+
 type ThresholdProps = {
   repos: Repo[];
   reposLoading?: boolean;
@@ -19,9 +27,19 @@ type ThresholdProps = {
     repo?: Repo;
     initialMessage?: string;
   }) => void;
+  onToggleStar?: (path: string) => void;
+  assistantEngine?: AssistantEngine;
+  onAssistantEngineChange?: (e: AssistantEngine) => void;
 };
 
-export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
+export function Threshold({
+  repos,
+  reposLoading,
+  onSetForth,
+  onToggleStar,
+  assistantEngine = 'claude',
+  onAssistantEngineChange,
+}: ThresholdProps) {
   const [companion, setCompanion] = useState<CompanionId>('claude');
   // The Assistant Hub from the live repo list, if discovered. Falls back to the constant.
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
@@ -49,8 +67,21 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
   const selectedRepoPath = effectiveRepo?.path;
 
+  // Engine="claude" keeps the legacy 'assistant' cli alias (preserves existing
+  // hub sessions and lets the server resolve cwd via its ASSISTANT_HUB_PATH
+  // constant). For codex/banana the server uses the client-supplied cwd, so we
+  // only morph once the live hub repo has loaded — otherwise the mock fallback
+  // path could spawn the runner in the wrong dir if the server has an
+  // ELROND_WORKSPACE_PATH override.
+  const liveHubLoaded = repos.some((r) => r.isAssistantHub);
+  const canSwitchEngine = liveHubLoaded;
+  const effectiveCompanion: CompanionId =
+    companion === 'assistant' && assistantEngine !== 'claude' && liveHubLoaded
+      ? assistantEngine
+      : companion;
+
   const setForth = (initialMessage?: string) => {
-    onSetForth({ companion, repo: effectiveRepo, initialMessage });
+    onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage });
   };
 
   const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -58,10 +89,14 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
     e.preventDefault();
     // If exactly one repo matches, treat the typed text as a repo selector and
     // just set forth without a message. Otherwise treat it as the first message.
-    if (filteredRepos.length === 1 && query.trim() === filteredRepos[0].name) {
+    if (
+      companion !== 'assistant' &&
+      filteredRepos.length === 1 &&
+      query.trim() === filteredRepos[0].name
+    ) {
       setSelectedRepo(filteredRepos[0]);
       setQuery('');
-      onSetForth({ companion, repo: filteredRepos[0] });
+      onSetForth({ companion: effectiveCompanion, repo: filteredRepos[0] });
       return;
     }
     setForth(query.trim());
@@ -212,47 +247,85 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
             }
           />
           {companion === 'assistant' ? (
-            <div
-              style={{
-                padding: '11px 14px',
-                borderLeft: '2px solid var(--ember)',
-                background: 'rgba(184,89,58,0.08)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-              }}
-            >
-              <svg width="11" height="14" viewBox="0 0 11 14" fill="none" style={{ flexShrink: 0 }}>
-                <path d="M1 2 H10 V12 H1 Z" stroke="var(--ink-soft)" strokeWidth="0.8" />
-                <path d="M3 5 H8 M3 7 H8 M3 9 H6" stroke="var(--ink-soft)" strokeWidth="0.6" />
-              </svg>
-              <span
-                className="sw-mono"
+            <>
+              <div
                 style={{
-                  fontSize: 14,
-                  color: 'var(--ink)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  flex: 1,
-                  minWidth: 0,
+                  padding: '11px 14px',
+                  borderLeft: '2px solid var(--ember)',
+                  background: 'rgba(184,89,58,0.08)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
                 }}
               >
-                ASSISTANT-HUB
-              </span>
-              <span
-                className="sw-mono"
-                style={{ fontSize: 12.5, color: 'var(--ember)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                <svg width="11" height="14" viewBox="0 0 11 14" fill="none" style={{ flexShrink: 0 }}>
+                  <path d="M1 2 H10 V12 H1 Z" stroke="var(--ink-soft)" strokeWidth="0.8" />
+                  <path d="M3 5 H8 M3 7 H8 M3 9 H6" stroke="var(--ink-soft)" strokeWidth="0.6" />
+                </svg>
+                <span
+                  className="sw-mono"
+                  style={{
+                    fontSize: 14,
+                    color: 'var(--ink)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  ASSISTANT-HUB
+                </span>
+                <span
+                  className="sw-mono"
+                  style={{ fontSize: 12.5, color: 'var(--ember)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                >
+                  · master
+                </span>
+                <span
+                  className="sw-folio"
+                  style={{ whiteSpace: 'nowrap', flexShrink: 0, fontStyle: 'italic' }}
+                >
+                  always at hand
+                </span>
+              </div>
+              <div
+                role="radiogroup"
+                aria-label="assistant engine"
+                style={{
+                  marginTop: 10,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  paddingLeft: 2,
+                }}
               >
-                · master
-              </span>
-              <span
-                className="sw-folio"
-                style={{ whiteSpace: 'nowrap', flexShrink: 0, fontStyle: 'italic' }}
-              >
-                always at hand
-              </span>
-            </div>
+                <span
+                  className="sw-smallcaps"
+                  style={{ fontSize: 11, color: 'var(--ink-faint)', whiteSpace: 'nowrap' }}
+                >
+                  engine
+                </span>
+                {ASSISTANT_ENGINES.map((opt) => {
+                  // Claude is always available (legacy alias). Codex/Banana
+                  // require the live hub repo so the server resolves cwd
+                  // correctly under ELROND_WORKSPACE_PATH overrides.
+                  const disabled = opt.id !== 'claude' && !canSwitchEngine;
+                  return (
+                    <EnginePill
+                      key={opt.id}
+                      label={opt.label}
+                      selected={assistantEngine === opt.id}
+                      disabled={disabled}
+                      onClick={() => {
+                        if (disabled) return;
+                        onAssistantEngineChange?.(opt.id);
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </>
           ) : reposLoading && regularRepos.length === 0 ? (
             <div
               className="sw-folio"
@@ -270,7 +343,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
                   no repo matches "{query}"
                 </div>
               ) : (
-                groupByHub(filteredRepos).map(({ hub, repos: hubRepos }) => (
+                groupByDisplayHub(filteredRepos).map(({ hub, repos: hubRepos }) => (
                   <div key={hub} style={{ marginBottom: 8 }}>
                     {hub && (
                       <div
@@ -278,7 +351,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
                         style={{
                           fontSize: 10.5,
                           fontStyle: 'italic',
-                          color: 'var(--ink-faint)',
+                          color: hub === STARRED_HUB_LABEL ? 'var(--ember)' : 'var(--ink-faint)',
                           padding: '4px 12px 2px',
                           letterSpacing: '0.04em',
                         }}
@@ -293,6 +366,7 @@ export function Threshold({ repos, reposLoading, onSetForth }: ThresholdProps) {
                           repo={r}
                           selected={r.path === selectedRepoPath}
                           onClick={() => setSelectedRepo(r)}
+                          onToggleStar={onToggleStar}
                         />
                       ))}
                     </div>
@@ -508,12 +582,49 @@ function CompanionPick({
   );
 }
 
+function EnginePill({
+  label,
+  selected,
+  onClick,
+  disabled = false,
+}: { label: string; selected: boolean; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      aria-disabled={disabled || undefined}
+      onClick={onClick}
+      title={disabled ? 'available once the hub repo loads' : undefined}
+      style={{
+        padding: '5px 12px',
+        borderRadius: 14,
+        border: '1px solid ' + (selected ? 'var(--ink)' : 'var(--rule-soft)'),
+        background: selected ? 'var(--ink)' : 'var(--vellum)',
+        color: selected ? 'var(--vellum)' : 'var(--ink)',
+        fontFamily: 'var(--serif-display)',
+        fontSize: 13,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
+        whiteSpace: 'nowrap',
+        lineHeight: 1.1,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+const STARRED_HUB_LABEL = '★ starred';
+
 // Bucket repos by hub, preserving the order in which hubs were first seen.
-function groupByHub(repos: Repo[]): Array<{ hub: string; repos: Repo[] }> {
+// Starred repos are pulled into a single synthetic bucket at the top so the
+// pinned set clusters together regardless of which hub each repo lives in.
+function groupByDisplayHub(repos: Repo[]): Array<{ hub: string; repos: Repo[] }> {
   const order: string[] = [];
   const buckets = new Map<string, Repo[]>();
   for (const r of repos) {
-    const key = r.hub ?? '';
+    const key = r.starred ? STARRED_HUB_LABEL : (r.hub ?? '');
     if (!buckets.has(key)) {
       order.push(key);
       buckets.set(key, []);
@@ -527,8 +638,15 @@ function RepoPick({
   repo,
   selected,
   onClick,
-}: { repo: Repo; selected: boolean; onClick: () => void }) {
-  const { branch, pinned, italic, awaits } = repo;
+  onToggleStar,
+}: {
+  repo: Repo;
+  selected: boolean;
+  onClick: () => void;
+  onToggleStar?: (path: string) => void;
+}) {
+  const { branch, pinned, italic, awaits, starred } = repo;
+  const canStar = !!onToggleStar && !italic;
   return (
     <div
       onClick={onClick}
@@ -549,7 +667,35 @@ function RepoPick({
         minWidth: 0,
       }}
     >
-      {!italic && (
+      {canStar && (
+        <button
+          type="button"
+          aria-label={starred ? 'unstar repo' : 'star repo'}
+          aria-pressed={!!starred}
+          title={starred ? 'unstar' : 'pin to top'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleStar?.(repo.path);
+          }}
+          style={{
+            background: 'transparent',
+            border: 0,
+            padding: 0,
+            cursor: 'pointer',
+            color: starred ? 'var(--ember)' : 'var(--ink-faint)',
+            fontSize: 14,
+            lineHeight: 1,
+            flexShrink: 0,
+            width: 16,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {starred ? '★' : '☆'}
+        </button>
+      )}
+      {!italic && !canStar && (
         <svg width="13" height="16" viewBox="0 0 11 14" fill="none" style={{ flexShrink: 0 }}>
           <path d="M1 2 H10 V12 H1 Z" stroke="var(--ink-soft)" strokeWidth="0.8" />
           <path

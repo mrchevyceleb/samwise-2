@@ -36,6 +36,12 @@ export type SessionEvent =
   | { type: 'closed'; code: number | null; signal: NodeJS.Signals | null }
   | { type: 'error'; message: string };
 
+// Model + reasoning effort every `claude` spawn runs with. Single source of
+// truth. Opus 4.7+ uses adaptive thinking and ignores MAX_THINKING_TOKENS; the
+// live lever is the `--effort` flag (low|medium|high|xhigh|max). "max" is top.
+const CLAUDE_MODEL = 'claude-opus-4-8';
+const CLAUDE_EFFORT = 'max';
+
 const ASSISTANT_AGENT_PROMPT =
   "You are Samwise — a calm, literary, helpful assistant. The user is Matt. " +
   "You're working inside the ASSISTANT-HUB repo, which contains his task system, " +
@@ -146,6 +152,8 @@ class ClaudeSession {
       '--verbose',
       '--include-partial-messages',
       '--disallowedTools', 'AskUserQuestion',
+      '--model', CLAUDE_MODEL,
+      '--effort', CLAUDE_EFFORT,
       ...(planMode
         ? ['--permission-mode', 'plan']
         : ['--dangerously-skip-permissions']),
@@ -658,7 +666,7 @@ export async function freshStart(opts: {
 export async function dropSession(cli: CliKind, repoPath: string, chatId = 'main'): Promise<void> {
   if (cli === 'codex') {
     const { dropCodexSession } = await import('./codex-runner.ts');
-    dropCodexSession({ repoPath, chatId });
+    await dropCodexSession({ repoPath, chatId });
     return;
   }
   if (cli === 'banana') {
@@ -744,7 +752,7 @@ export async function interruptSession(opts: {
   const chatId = opts.chatId || 'main';
   if (opts.cli === 'codex') {
     const { interruptCodex } = await import('./codex-runner.ts');
-    interruptCodex({ repoPath: opts.repoPath, chatId });
+    await interruptCodex({ repoPath: opts.repoPath, chatId });
     return;
   }
   if (opts.cli === 'banana') {

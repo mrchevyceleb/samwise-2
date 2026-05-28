@@ -153,16 +153,27 @@ const COMPANION_LABEL: Record<CompanionId, string> = {
   assistant: 'assistant',
 };
 
+type MobileAssistantEngine = 'claude' | 'codex' | 'banana';
+
+const MOBILE_ASSISTANT_ENGINES: { id: MobileAssistantEngine; label: string }[] = [
+  { id: 'claude', label: 'Claude' },
+  { id: 'codex', label: 'Codex' },
+  { id: 'banana', label: 'Banana' },
+];
+
 // ─── Mobile Threshold ───
 export function MobileThreshold({
   repos,
   reposLoading,
   onSetForth,
+  onToggleStar,
   liveSessions = [],
   onSelectLive,
   onDismissLive,
   theme = 'light',
   onToggleTheme,
+  assistantEngine = 'claude',
+  onAssistantEngineChange,
 }: {
   repos: Repo[];
   reposLoading?: boolean;
@@ -171,11 +182,14 @@ export function MobileThreshold({
     repo?: Repo;
     initialMessage?: string;
   }) => void;
+  onToggleStar?: (path: string) => void;
   liveSessions?: LiveSession[];
   onSelectLive?: (s: LiveSession) => void;
   onDismissLive?: (s: LiveSession) => void;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  assistantEngine?: MobileAssistantEngine;
+  onAssistantEngineChange?: (e: MobileAssistantEngine) => void;
 }) {
   const [companion, setCompanion] = useState<CompanionId>('claude');
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
@@ -191,6 +205,19 @@ export function MobileThreshold({
 
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
   const selectedRepoPath = effectiveRepo?.path;
+
+  // Morph assistant + non-default engine into that engine's cli at boundary.
+  // Codex/Banana use the client-supplied cwd, so we only morph once the live
+  // hub repo has loaded (otherwise the mock fallback path could spawn the
+  // runner in the wrong dir if the server has an ELROND_WORKSPACE_PATH
+  // override). Claude keeps the legacy 'assistant' alias and the server
+  // resolves cwd itself.
+  const liveHubLoaded = repos.some((r) => r.isAssistantHub);
+  const canSwitchEngine = liveHubLoaded;
+  const effectiveCompanion: CompanionId =
+    companion === 'assistant' && assistantEngine !== 'claude' && liveHubLoaded
+      ? assistantEngine
+      : companion;
 
   return (
     <div
@@ -446,7 +473,7 @@ export function MobileThreshold({
             if (!query.trim()) return;
             const text = query.trim();
             setQuery('');
-            onSetForth({ companion, repo: effectiveRepo, initialMessage: text });
+            onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
           }}
           style={{
             padding: '16px 16px',
@@ -501,43 +528,79 @@ export function MobileThreshold({
             }
           />
           {companion === 'assistant' ? (
-            <div
-              style={{
-                padding: '6px 8px',
-                borderLeft: '2px solid var(--ember)',
-                background: 'rgba(184,89,58,0.08)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-              }}
-            >
-              <span
-                className="sw-mono"
+            <>
+              <div
                 style={{
-                  fontSize: 12,
-                  color: 'var(--ink)',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  flex: 1,
-                  minWidth: 0,
+                  padding: '6px 8px',
+                  borderLeft: '2px solid var(--ember)',
+                  background: 'rgba(184,89,58,0.08)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
                 }}
               >
-                ASSISTANT-HUB
-              </span>
-              <span
-                className="sw-mono"
-                style={{ fontSize: 10, color: 'var(--ember)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                <span
+                  className="sw-mono"
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--ink)',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    flex: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  ASSISTANT-HUB
+                </span>
+                <span
+                  className="sw-mono"
+                  style={{ fontSize: 10, color: 'var(--ember)', whiteSpace: 'nowrap', flexShrink: 0 }}
+                >
+                  · master
+                </span>
+                <span
+                  className="sw-folio"
+                  style={{ whiteSpace: 'nowrap', flexShrink: 0, fontStyle: 'italic' }}
+                >
+                  always at hand
+                </span>
+              </div>
+              <div
+                role="radiogroup"
+                aria-label="assistant engine"
+                style={{
+                  marginTop: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  paddingLeft: 2,
+                  flexWrap: 'wrap',
+                }}
               >
-                · master
-              </span>
-              <span
-                className="sw-folio"
-                style={{ whiteSpace: 'nowrap', flexShrink: 0, fontStyle: 'italic' }}
-              >
-                always at hand
-              </span>
-            </div>
+                <span
+                  className="sw-smallcaps"
+                  style={{ fontSize: 10, color: 'var(--ink-faint)', whiteSpace: 'nowrap' }}
+                >
+                  engine
+                </span>
+                {MOBILE_ASSISTANT_ENGINES.map((opt) => {
+                  const disabled = opt.id !== 'claude' && !canSwitchEngine;
+                  return (
+                    <MobileEnginePill
+                      key={opt.id}
+                      label={opt.label}
+                      selected={assistantEngine === opt.id}
+                      disabled={disabled}
+                      onClick={() => {
+                        if (disabled) return;
+                        onAssistantEngineChange?.(opt.id);
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </>
           ) : reposLoading && regularRepos.length === 0 ? (
             <div
               className="sw-folio"
@@ -547,14 +610,38 @@ export function MobileThreshold({
             </div>
           ) : (
             <>
-              {regularRepos.map((r) => (
-                <PRepo
-                  key={r.path}
-                  repo={r}
-                  selected={r.path === selectedRepoPath}
-                  onClick={() => setSelectedRepo(r)}
-                />
-              ))}
+              {(() => {
+                const starred = regularRepos.filter((r) => r.starred);
+                const rest = regularRepos.filter((r) => !r.starred);
+                return (
+                  <>
+                    {starred.length > 0 && (
+                      <>
+                        <PHubLabel label="★ starred" tone="ember" />
+                        {starred.map((r) => (
+                          <PRepo
+                            key={r.path}
+                            repo={r}
+                            selected={r.path === selectedRepoPath}
+                            onClick={() => setSelectedRepo(r)}
+                            onToggleStar={onToggleStar}
+                          />
+                        ))}
+                        {rest.length > 0 && <PHubLabel label="the rest" />}
+                      </>
+                    )}
+                    {rest.map((r) => (
+                      <PRepo
+                        key={r.path}
+                        repo={r}
+                        selected={r.path === selectedRepoPath}
+                        onClick={() => setSelectedRepo(r)}
+                        onToggleStar={onToggleStar}
+                      />
+                    ))}
+                  </>
+                );
+              })()}
               {SPECIAL_REPOS.map((r) => (
                 <PRepo
                   key={r.path}
@@ -587,7 +674,7 @@ export function MobileThreshold({
               const text = query.trim();
               setQuery('');
               onSetForth({
-                companion,
+                companion: effectiveCompanion,
                 repo: effectiveRepo,
                 initialMessage: text || undefined,
               });
@@ -1561,13 +1648,69 @@ function PCompanion({
   );
 }
 
+function MobileEnginePill({
+  label,
+  selected,
+  onClick,
+  disabled = false,
+}: { label: string; selected: boolean; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      aria-disabled={disabled || undefined}
+      onClick={onClick}
+      style={{
+        padding: '4px 10px',
+        borderRadius: 12,
+        border: '1px solid ' + (selected ? 'var(--ink)' : 'var(--rule-soft)'),
+        background: selected ? 'var(--ink)' : 'var(--vellum)',
+        color: selected ? 'var(--vellum)' : 'var(--ink)',
+        fontFamily: 'var(--serif-display)',
+        fontSize: 12,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.45 : 1,
+        whiteSpace: 'nowrap',
+        lineHeight: 1.1,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function PHubLabel({ label, tone }: { label: string; tone?: 'ember' }) {
+  return (
+    <div
+      className="sw-folio"
+      style={{
+        fontSize: 10,
+        fontStyle: 'italic',
+        color: tone === 'ember' ? 'var(--ember)' : 'var(--ink-faint)',
+        padding: '6px 8px 2px',
+        letterSpacing: '0.04em',
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
 function PRepo({
   repo,
   selected,
   onClick,
-}: { repo: Repo; selected?: boolean; onClick?: () => void }) {
-  const { branch, recent, pinned, italic, awaits } = repo;
+  onToggleStar,
+}: {
+  repo: Repo;
+  selected?: boolean;
+  onClick?: () => void;
+  onToggleStar?: (path: string) => void;
+}) {
+  const { branch, recent, pinned, italic, awaits, starred } = repo;
   const label = italic ? repo.name : repo.name;
+  const canStar = !!onToggleStar && !italic;
   return (
     <div
       onClick={onClick}
@@ -1586,6 +1729,34 @@ function PRepo({
         cursor: 'pointer',
       }}
     >
+      {canStar && (
+        <button
+          type="button"
+          aria-label={starred ? 'unstar repo' : 'star repo'}
+          aria-pressed={!!starred}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleStar?.(repo.path);
+          }}
+          style={{
+            background: 'transparent',
+            border: 0,
+            padding: 0,
+            cursor: 'pointer',
+            color: starred ? 'var(--ember)' : 'var(--ink-faint)',
+            fontSize: 16,
+            lineHeight: 1,
+            flexShrink: 0,
+            width: 22,
+            minHeight: 28,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {starred ? '★' : '☆'}
+        </button>
+      )}
       <span
         style={{
           fontSize: 13,

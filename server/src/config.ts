@@ -19,7 +19,13 @@ export const REPO_SCAN_HUB_PATHS: string[] = [
 ];
 
 // Hub-level subfolders to skip when walking REPO_SCAN_HUB_PATHS.
-export const IGNORED_HUB_NAMES = new Set<string>(['worktrees', 'node_modules']);
+// `pr-review-batch` is the staging ground for /pr-review-batch worktrees,
+// not a real hub of long-lived repos.
+export const IGNORED_HUB_NAMES = new Set<string>([
+  'worktrees',
+  'node_modules',
+  'pr-review-batch',
+]);
 
 // The Assistant Hub — surfaced as the "Assistant" companion's repo.
 // Moved off OneDrive to a Syncthing-managed local folder. Env override lets
@@ -48,3 +54,5 @@ export const CLAUDE_PROJECTS_DIR = join(homedir(), '.claude', 'projects');
 // Where samwise-2 persists its (repo,cli) -> claude session_id map.
 export const STATE_DIR = join(homedir(), '.samwise-2');
 export const SESSIONS_FILE = join(STATE_DIR, 'sessions.json');
+// Repos Matt has starred from the Threshold. Sorted to the top of /api/repos.
+export const STARS_FILE = join(STATE_DIR, 'stars.json');

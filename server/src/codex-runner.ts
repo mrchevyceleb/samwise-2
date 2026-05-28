@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,55 @@ import {
   compactEventLog,
   loadEventLogSync,
 } from './event-log-store.ts';
+
+/** Kill the entire process group (codex spawns tool subprocesses), then sweep
+ *  any straggling descendants pgrep finds. Mirrors banana-runner's approach.
+ *  Needed for steering: codex's tool subprocesses (sh, gh, etc.) outlive
+ *  `child.kill()` and continue to write to the rollout JSONL. */
+function terminateProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const descendants = child.pid ? collectDescendantPids(child.pid) : [];
+  try { child.kill(signal); } catch {}
+  if (child.pid) {
+    try { process.kill(-child.pid, signal); } catch {}
+  }
+  for (const pid of descendants.reverse()) {
+    try { process.kill(pid, signal); } catch {}
+  }
+}
+
+function collectDescendantPids(pid: number): number[] {
+  try {
+    const out = execFileSync('/usr/bin/pgrep', ['-P', String(pid)], { encoding: 'utf8', timeout: 1000 });
+    const children = out
+      .split(/\s+/)
+      .map((v) => Number(v))
+      .filter((v) => Number.isInteger(v) && v > 0);
+    return children.flatMap((c) => [c, ...collectDescendantPids(c)]);
+  } catch {
+    return [];
+  }
+}
+
+/** Resolve once the child has fully exited. SIGTERM first; SIGKILL after 3s
+ *  if it's still alive. Returns immediately if the child is already dead.
+ *  Used by shutdown() so the next `codex exec resume` only starts after the
+ *  prior child has released the rollout JSONL. Without this, steer races
+ *  against the dying child's final writes and the resume reads partial state. */
+async function waitForTreeExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  const exited = new Promise<void>((resolve) => {
+    const done = () => resolve();
+    child.once('exit', done);
+    child.once('error', done);
+  });
+  terminateProcessTree(child, 'SIGTERM');
+  const sigkill = setTimeout(() => {
+    if (child.exitCode === null) terminateProcessTree(child, 'SIGKILL');
+  }, 3000);
+  sigkill.unref();
+  await exited;
+  clearTimeout(sigkill);
+}
 
 const EVENT_BUFFER_SIZE = 2000;
 
@@ -76,6 +125,10 @@ export class CodexSession {
   private busy = false;
   private dead = false;
   private currentChild: ChildProcess | null = null;
+  /** Set by shutdown() before SIGTERM so the in-flight send()'s close handler
+   *  knows not to emit a stray result/turnEnd — shutdown will emit its own
+   *  'closed' once the child has actually exited. */
+  private intentionalKill = false;
   private eventLog: SeqEvent[] = [];
   private mirrorEvents = true;
   private nextSeq = 1;
@@ -153,18 +206,22 @@ export class CodexSession {
     return this.lastActivityAtMs;
   }
 
-  shutdown(): void {
+  /** Async so steering can await the child's full exit (SIGKILL fallback at
+   *  3s) before the next `codex exec resume` spawns. Without the await, the
+   *  dying child's final writes to the rollout JSONL race the resume read. */
+  async shutdown(): Promise<void> {
     if (this.dead) return;
     this.dead = true;
     this.disarmIdleTimer();
-    if (this.currentChild) {
-      try { this.currentChild.kill('SIGTERM'); } catch {}
+    const child = this.currentChild;
+    if (child && child.exitCode === null) {
+      this.intentionalKill = true;
+      await waitForTreeExit(child);
     }
     // Notify subscribers so the WS layer drops its sessionPromise and rebinds
     // on the next user send. Mirrors ClaudeSession's child-exit-driven closed
     // event; codex has no persistent child to hook, so we emit it explicitly.
-    // We must emit BEFORE discardListeners so the WS layer still receives the
-    // closed notification.
+    // Emit BEFORE discardListeners so the WS layer still receives it.
     this.emit({ type: 'closed', code: null, signal: 'SIGTERM' });
     this.discardListeners();
   }
@@ -253,6 +310,10 @@ export class CodexSession {
       cwd: this.cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Start a new process group so a steer can kill -<pgid> and take down
+      // codex's tool subprocesses (sh, gh, etc.) along with it. Without this,
+      // those children outlive `child.kill()` and keep writing to the rollout.
+      detached: true,
     });
     this.currentChild = child;
 
@@ -319,6 +380,11 @@ export class CodexSession {
       this.busy = false;
       this.currentChild = null;
       cleanupImages();
+      // Intentional kill (shutdown driven by steer/stop): skip result + turnEnd
+      // emits. shutdown() will emit 'closed' once it's done awaiting us, and
+      // the WS layer's steer/stop handler is already driving the next state.
+      // Emitting turnEnd here would race with the new session's turnStart.
+      if (this.intentionalKill) return;
       this.closeDanglingToolBlocks(turnState, code, stderrChunks.join('\n').trim());
       // Emit a result event so the front-end flips status back to 'ready'.
       // Forward normalized Codex usage so the context meter has sane numbers.
@@ -388,7 +454,10 @@ export class CodexSession {
       return;
     }
     removeFromCodexMap(this.key, this);
-    this.shutdown();
+    // Idle self-expiry: no listeners, no in-flight turn, so the SIGTERM
+    // doesn't need to be awaited. Don't block the timer callback on the
+    // child exit.
+    void this.shutdown();
   }
 
   /** Forward an event already in claude stream-json shape. */
@@ -602,7 +671,9 @@ export function pruneIdleCodexSessions(ttlMs: number, now = Date.now()): number 
     if (session.isBusy()) continue;
     if (session.listenerCount() > 0) continue;
     if (now - session.lastActivityAt() < ttlMs) continue;
-    session.shutdown();
+    // Idle reaper: no listeners, not busy, so we can fire-and-forget the
+    // SIGTERM. No racing resume to await for here.
+    void session.shutdown();
     codexSessions.delete(key);
     pruned += 1;
   }
@@ -626,30 +697,34 @@ export async function getOrCreateCodexSession(opts: {
 }
 
 export function shutdownAllCodexSessions(): void {
-  for (const s of codexSessions.values()) s.shutdown();
+  // Process-exit path: fire-and-forget the SIGTERM. Node will reap children
+  // as the event loop drains.
+  for (const s of codexSessions.values()) void s.shutdown();
   codexSessions.clear();
 }
 
-/** Kill the in-flight codex child but keep the thread id saved for resume. */
-export function interruptCodex(opts: { repoPath: string; chatId?: string }): void {
+/** Kill the in-flight codex child and wait for it to fully exit before
+ *  returning. Caller (steer/stop) needs the await so the next `codex exec
+ *  resume` doesn't race the dying child's writes to the rollout JSONL. */
+export async function interruptCodex(opts: { repoPath: string; chatId?: string }): Promise<void> {
   const cwd = opts.repoPath;
   const key = keyOf(cwd, opts.chatId);
   const s = codexSessions.get(key);
   if (s) {
-    s.shutdown();
     codexSessions.delete(key);
+    await s.shutdown();
   }
 }
 
 /** Drop the warm codex child but keep the saved thread id so the next click
  *  resumes the conversation. Used by the user's manual "dismiss" button. */
-export function dropCodexSession(opts: { repoPath: string; chatId?: string }): void {
+export async function dropCodexSession(opts: { repoPath: string; chatId?: string }): Promise<void> {
   const cwd = opts.repoPath;
   const key = keyOf(cwd, opts.chatId);
   const s = codexSessions.get(key);
   if (s) {
-    s.shutdown();
     codexSessions.delete(key);
+    await s.shutdown();
   }
 }
 
@@ -675,8 +750,8 @@ export async function freshStartCodex(opts: {
   const existing = codexSessions.get(key);
   if (existing) {
     existing.detachEventLog();
-    existing.shutdown();
     codexSessions.delete(key);
+    await existing.shutdown();
   }
   await clearEventLog(key);
   await setSessionId('codex', cwd, '', chatId);

@@ -9,6 +9,7 @@ import { discoverRepos, gitBranch } from './repos.ts';
 import { readChronicle } from './chronicle.ts';
 import { readCommands } from './commands.ts';
 import { ensureStateDir, getPlanMode, setSessionId } from './sessions.ts';
+import { readStars, toggleStar } from './stars.ts';
 import {
   getOrCreateSession,
   freshStart,
@@ -66,6 +67,29 @@ app.get('/api/repos', async (_req, res) => {
   try {
     const repos = await discoverRepos();
     res.json({ repos });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.get('/api/stars', async (_req, res) => {
+  try {
+    const set = await readStars();
+    res.json({ paths: Array.from(set).sort() });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.post('/api/stars/toggle', async (req, res) => {
+  const path = typeof req.body?.path === 'string' ? req.body.path : '';
+  if (!path) {
+    res.status(400).json({ error: 'path required' });
+    return;
+  }
+  try {
+    const starred = await toggleStar(path);
+    res.json({ path, starred });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }

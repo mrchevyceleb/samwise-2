@@ -26,6 +26,22 @@ type View = 'threshold' | 'conversation';
 // server-side event buffer can replay the missed turn output.
 const ACTIVE_KEY = 'samwise-2:active';
 const CHRONICLE_COLLAPSED_KEY = 'samwise-2:chronicle-collapsed';
+const ASSISTANT_ENGINE_KEY = 'samwise-2:assistant-engine';
+
+// The Assistant companion is a "where" (the hub), not a "what" (which CLI).
+// We let the user pick which engine drives it. 'claude' keeps the legacy
+// 'assistant' cli kind on the wire so existing stored sessions still resume;
+// 'codex' / 'banana' morph the companion at the boundary so they go through
+// the regular codex/banana runners with cwd set to the hub.
+export type AssistantEngine = 'claude' | 'codex' | 'banana';
+
+function readAssistantEngine(): AssistantEngine {
+  if (typeof window === 'undefined') return 'claude';
+  const v = localStorage.getItem(ASSISTANT_ENGINE_KEY);
+  if (v === 'claude' || v === 'codex' || v === 'banana') return v;
+  return 'claude';
+}
+
 type ActiveSession = {
   cli: CompanionId;
   repoPath: string;
@@ -82,6 +98,7 @@ export default function App() {
   const reposState = useRepos();
   const repos = reposState.repos;
   const reposLoading = reposState.status === 'loading';
+  const toggleRepoStar = reposState.toggleStar;
 
   const [chronicleTick, setChronicleTick] = useState(0);
   const chronicle = useChronicle(chronicleTick);
@@ -123,6 +140,11 @@ export default function App() {
   // Chosen Banana model. Defaults to the last pick (initial default
   // monkey/silverback). Only the Banana runner sends it.
   const [bananaModel, setBananaModel] = useState<string>(readStoredBananaModel);
+  const [assistantEngine, setAssistantEngineState] = useState<AssistantEngine>(readAssistantEngine);
+  const setAssistantEngine = (e: AssistantEngine) => {
+    setAssistantEngineState(e);
+    if (typeof window !== 'undefined') localStorage.setItem(ASSISTANT_ENGINE_KEY, e);
+  };
 
   const chat = useChat({
     repo,
@@ -291,6 +313,7 @@ export default function App() {
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
+            onToggleStar={toggleRepoStar}
             liveSessions={liveSessions}
             onSelectLive={(s) => {
               openLiveSession(s);
@@ -298,6 +321,8 @@ export default function App() {
             onDismissLive={dismissLiveSession}
             theme={theme}
             onToggleTheme={toggleTheme}
+            assistantEngine={assistantEngine}
+            onAssistantEngineChange={setAssistantEngine}
           />
         ) : (
           <MobileConversation
@@ -379,6 +404,9 @@ export default function App() {
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
+            onToggleStar={toggleRepoStar}
+            assistantEngine={assistantEngine}
+            onAssistantEngineChange={setAssistantEngine}
           />
         ) : (
           <Conversation
