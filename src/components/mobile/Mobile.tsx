@@ -8,6 +8,8 @@ import {
 } from '../primitives/chat';
 import { Markdown } from '../primitives/Markdown';
 import { BananaModelPicker } from '../primitives/BananaModelPicker';
+import { CodexModelPicker } from '../primitives/CodexModelPicker';
+import { ClaudeModelPicker } from '../primitives/ClaudeModelPicker';
 import { isInteractiveTool } from '../../hooks/useChat';
 import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
@@ -751,9 +753,11 @@ export function MobileConversation({
   onTogglePlanMode,
   planMode = false,
   acceptImages = true,
-  showModelPicker = false,
+  modelPicker,
   model,
+  effort,
   onModelChange,
+  onEffortChange,
 }: {
   agent?: string;
   repo?: string;
@@ -774,10 +778,11 @@ export function MobileConversation({
   onTogglePlanMode?: (enabled: boolean) => void;
   planMode?: boolean | null;
   acceptImages?: boolean;
-  /** Show the Banana model picker (only when the Banana runner is active). */
-  showModelPicker?: boolean;
+  modelPicker?: 'banana' | 'codex' | 'claude';
   model?: string;
+  effort?: string;
   onModelChange?: (id: string) => void;
+  onEffortChange?: (effort: string) => void;
 }) {
   const [draft, setDraft] = useState('');
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; mediaType: string; base64: string; previewUrl: string }>>([]);
@@ -1183,11 +1188,33 @@ export function MobileConversation({
           flexShrink: 0,
         }}
       >
-        {showModelPicker && onModelChange && model && (
+        {modelPicker === 'banana' && onModelChange && model && (
           <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
             <BananaModelPicker
               value={model}
               onChange={onModelChange}
+              disabled={status === 'streaming'}
+            />
+          </div>
+        )}
+        {modelPicker === 'codex' && onModelChange && onEffortChange && model && effort && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+            <CodexModelPicker
+              model={model}
+              effort={effort}
+              onModelChange={onModelChange}
+              onEffortChange={onEffortChange}
+              disabled={status === 'streaming'}
+            />
+          </div>
+        )}
+        {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
+          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+            <ClaudeModelPicker
+              model={model}
+              effort={effort}
+              onModelChange={onModelChange}
+              onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
             />
           </div>

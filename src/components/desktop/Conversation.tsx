@@ -10,6 +10,8 @@ import {
 import { isInteractiveTool } from '../../hooks/useChat';
 import { Markdown } from '../primitives/Markdown';
 import { BananaModelPicker } from '../primitives/BananaModelPicker';
+import { CodexModelPicker } from '../primitives/CodexModelPicker';
+import { ClaudeModelPicker } from '../primitives/ClaudeModelPicker';
 import type { ChatBlock, CommandEntry } from '../../data/types';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
@@ -33,10 +35,11 @@ type ConversationProps = {
   onTogglePlanMode?: (enabled: boolean) => void;
   planMode?: boolean | null;
   acceptImages?: boolean;
-  /** Show the Banana model picker (only when the Banana runner is active). */
-  showModelPicker?: boolean;
+  modelPicker?: 'banana' | 'codex' | 'claude';
   model?: string;
+  effort?: string;
   onModelChange?: (id: string) => void;
+  onEffortChange?: (effort: string) => void;
 };
 
 const statusToneByStatus: Record<Status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -78,9 +81,11 @@ export function Conversation({
   onTogglePlanMode,
   planMode = false,
   acceptImages = true,
-  showModelPicker = false,
+  modelPicker,
   model,
+  effort,
   onModelChange,
+  onEffortChange,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -212,10 +217,28 @@ export function Conversation({
                 {planMode ? 'plan mode · on' : 'plan mode · off'}
               </button>
             )}
-            {showModelPicker && onModelChange && model && (
+            {modelPicker === 'banana' && onModelChange && model && (
               <BananaModelPicker
                 value={model}
                 onChange={onModelChange}
+                disabled={status === 'streaming'}
+              />
+            )}
+            {modelPicker === 'codex' && onModelChange && onEffortChange && model && effort && (
+              <CodexModelPicker
+                model={model}
+                effort={effort}
+                onModelChange={onModelChange}
+                onEffortChange={onEffortChange}
+                disabled={status === 'streaming'}
+              />
+            )}
+            {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
+              <ClaudeModelPicker
+                model={model}
+                effort={effort}
+                onModelChange={onModelChange}
+                onEffortChange={onEffortChange}
                 disabled={status === 'streaming'}
               />
             )}

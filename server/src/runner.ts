@@ -1,8 +1,16 @@
-import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import { spawn, execFile, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { Readable, Writable } from 'node:stream';
 import { ASSISTANT_HUB_PATH } from './config.ts';
-import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
+import {
+  getClaudeSelection,
+  getPlanMode,
+  getSessionId,
+  setClaudeSelection,
+  setPlanMode,
+  setSessionId,
+} from './sessions.ts';
+import { resolveClaudeSelection } from './claude-models.ts';
 import { CodexSession, getOrCreateCodexSession } from './codex-runner.ts';
 import { BananaSession, getOrCreateBananaSession } from './banana-runner.ts';
 import {
@@ -34,18 +42,73 @@ export type SessionEvent =
   | { type: 'event'; event: any }       // raw stream-json event from claude
   | { type: 'turnEnd'; sessionId?: string }
   | { type: 'closed'; code: number | null; signal: NodeJS.Signals | null }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; code?: string; retryable?: boolean; fatal?: boolean };
 
-// Model + reasoning effort every `claude` spawn runs with. Single source of
-// truth. Opus 4.7+ uses adaptive thinking and ignores MAX_THINKING_TOKENS; the
-// live lever is the `--effort` flag (low|medium|high|xhigh|max). "max" is top.
-const CLAUDE_MODEL = 'claude-opus-4-8';
-const CLAUDE_EFFORT = 'max';
+// The Claude model + reasoning effort are chosen per (cli, repo, chatId) via the
+// UI picker and persisted through sessions.ts. They are spawn-time `--model` /
+// `--effort` args (low|medium|high|xhigh|max; "max" is top), so a picker change
+// recycles the warm process. resolveClaudeSelection is the trust boundary that
+// validates the values and falls back to the signed catalog default (Opus 5).
 
 const ASSISTANT_AGENT_PROMPT =
   "You are Samwise — a calm, literary, helpful assistant. The user is Matt. " +
   "You're working inside the ASSISTANT-HUB repo, which contains his task system, " +
   "client dashboards, and personal automation. Address him directly. Stay terse.";
+
+/** stderr signatures the `claude` CLI prints when its in-memory OAuth token
+ *  can't be refreshed — the refresh token was rotated out from under this
+ *  long-lived child by another concurrent `claude` process sharing
+ *  ~/.claude/.credentials.json. This is NOT an API 401 (it fails locally,
+ *  before any request is made), so it never arrives as a 401 stream event and
+ *  must be matched here to trigger the same respawn-from-disk recovery. Kept
+ *  narrow (an OAuth/credential/token context is required) so an unrelated MCP
+ *  server's "authenticate" stderr chatter can't tear the session down. */
+export function isAuthFailureText(text: string): boolean {
+  const t = text.toLowerCase();
+  if (t.includes('oauth session expired')) return true;
+  if (t.includes('oauth token') && t.includes('expired')) return true;
+  if ((t.includes('oauth') || t.includes('credential')) && t.includes('could not be refreshed')) return true;
+  if (
+    t.includes('failed to authenticate') &&
+    (t.includes('oauth') || t.includes('session') || t.includes('token') || t.includes('refresh'))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Re-sync the claude OAuth credentials for this process's CLAUDE_CONFIG_DIR
+ *  before respawning after an auth failure. This is THE fix for the recurring
+ *  "OAuth session expired" outage: the samwise-2 service reads creds from an
+ *  isolated config dir (~/.config/autosam/claude-config) that is a *copy* of
+ *  the source-of-truth ~/.claude login. When ~/.claude rotates its refresh
+ *  token, the copy goes stale, and the next refresh gets invalid_grant and the
+ *  CLI BLANKS the tokens on disk. `claude-auth-keepalive --ensure <dir>` heals
+ *  the source login and re-copies fresh tokens into the config dir, so the
+ *  respawn reads working credentials. Best-effort: on any failure (script
+ *  missing, network down, source login also dead) we resolve anyway and let the
+ *  respawn surface a real error. Bounded by a timeout so recovery can't hang. */
+export function refreshClaudeCredentials(timeoutMs = 30_000): Promise<void> {
+  return new Promise((resolve) => {
+    const home = process.env.HOME;
+    if (!home) return resolve();
+    const script = `${home}/bin/claude-auth-keepalive`;
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    const args = configDir ? ['--ensure', configDir] : [];
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; resolve(); } };
+    try {
+      execFile(script, args, { timeout: timeoutMs }, (err) => {
+        if (err) console.warn(`[claude] credential keepalive failed: ${err.message}`);
+        else console.log(`[claude] credential keepalive re-synced ${configDir ?? '(default)'}`);
+        done();
+      });
+    } catch (e) {
+      console.warn(`[claude] credential keepalive spawn error: ${(e as Error).message}`);
+      done();
+    }
+  });
+}
 
 // Each session keeps a rolling tail of recent events so a reconnecting client
 // gets the in-flight turn's output even if its WS dropped mid-stream. Bigger
@@ -69,6 +132,10 @@ class ClaudeSession {
   /** Whether this process was spawned with --permission-mode plan. Spawn-time
    *  arg, so toggling requires a recycle. */
   readonly planMode: boolean;
+  /** Model + reasoning effort this process was spawned with (--model/--effort).
+   *  Spawn-time args, so changing either requires a recycle. */
+  readonly model: string;
+  readonly effort: string;
   private child: ChildProcessByStdio<Writable, Readable, Readable>;
   private stdoutBuf = '';
   private listeners = new Set<(e: SeqEvent) => void>();
@@ -85,6 +152,9 @@ class ClaudeSession {
   private readonly startedResumeId: string | null = null;
   private resumeFailed = false;
   private spawnError: string | null = null;
+  /** Set once we detect a fatal auth failure (401/403) from the CLI's stream.
+   *  Guards failAuth() so a 10-deep retry storm only tears the child down once. */
+  private authFailed = false;
   private initSeen = false;
   private exitedBeforeInit = false;
   private startupWaiters = new Set<(state: 'initialized' | 'closed') => void>();
@@ -101,6 +171,8 @@ class ClaudeSession {
     chatId: string,
     resumeId: string | null,
     planMode: boolean,
+    model: string,
+    effort: string,
   ) {
     this.cli = cli;
     this.cwd = cwd;
@@ -109,6 +181,8 @@ class ClaudeSession {
     this.pendingResumeId = resumeId;
     this.startedResumeId = resumeId;
     this.planMode = planMode;
+    this.model = model;
+    this.effort = effort;
     this.ready = new Promise<boolean>((res) => { this.resolveReady = res; });
 
     try {
@@ -152,8 +226,8 @@ class ClaudeSession {
       '--verbose',
       '--include-partial-messages',
       '--disallowedTools', 'AskUserQuestion',
-      '--model', CLAUDE_MODEL,
-      '--effort', CLAUDE_EFFORT,
+      '--model', model,
+      '--effort', effort,
       ...(planMode
         ? ['--permission-mode', 'plan']
         : ['--dangerously-skip-permissions']),
@@ -172,9 +246,29 @@ class ClaudeSession {
 
     this.child.stderr.setEncoding('utf8');
     this.child.stderr.on('data', (chunk: string) => {
+      const text = chunk.trim();
+      // A LOCAL OAuth refresh failure (this warm child's cached refresh token
+      // was rotated out from under it by another concurrent `claude` process
+      // sharing ~/.claude/.credentials.json) never reaches the API, so it
+      // surfaces here on stderr as plain text rather than as a 401 stream
+      // event. The disk credentials are almost always still valid (whoever
+      // rotated them wrote a fresh pair), so this is recoverable: tear down
+      // this stale child so the next spawn re-reads the fresh creds. Route it
+      // through failAuth, exactly like an API 401, and mark it fatal so
+      // index.ts drives the respawn+replay even when no turn is in flight.
+      if (isAuthFailureText(text)) {
+        this.emit({
+          type: 'error',
+          message: 'Claude OAuth session expired. Reconnecting with fresh credentials…',
+          code: 'oauth',
+          fatal: true,
+        });
+        this.failAuth();
+        return;
+      }
       // Surface stderr as a soft error event but don't kill the session — the
       // CLI prints harmless warnings here too.
-      this.emit({ type: 'error', message: chunk.trim() });
+      this.emit({ type: 'error', message: text });
     });
 
     this.child.on('exit', (code, signal) => {
@@ -330,6 +424,18 @@ class ClaudeSession {
     this.disarmIdleTimer();
     try { this.child.stdin.end(); } catch {}
     try { this.child.kill('SIGTERM'); } catch {}
+    // SIGKILL backstop: a claude child mid-backoff-sleep (e.g. an auth retry
+    // storm) can ignore SIGTERM, leaving it lingering on the same --resume id
+    // while a fresh process respawns. Force-kill after a grace period so we
+    // never run two processes against one session. (Mirrors Rivendell.)
+    setTimeout(() => {
+      // A child reaped via SIGTERM leaves exitCode === null (signalCode is set
+      // instead), so check both before force-killing — otherwise we'd SIGKILL a
+      // PID that already exited.
+      if (this.child.exitCode === null && this.child.signalCode === null) {
+        try { this.child.kill('SIGKILL'); } catch {}
+      }
+    }, 3000).unref();
   }
 
   detachEventLog(): void {
@@ -349,7 +455,24 @@ class ClaudeSession {
   }
 
   isAlive(): boolean {
-    return this.child.exitCode === null && !this.spawnError;
+    return this.child.exitCode === null && !this.spawnError && !this.authFailed;
+  }
+
+  /** The warm child's OAuth token is dead (401/403). Retrying in-process can't
+   *  recover it — its cached refresh token was rotated out from under it. Tear
+   *  the child down so the next getOrCreateSession respawns a fresh process that
+   *  re-reads credentials from disk. Guarded so a retry storm only kills once. */
+  private failAuth(): void {
+    if (this.authFailed) return;
+    this.authFailed = true;
+    // Kill immediately. The fatal error was already emitted synchronously just
+    // above, and the child's 'exit'→'closed' fires on a later tick regardless,
+    // so ordering is safe without deferring. Killing now (rather than a tick
+    // later) shrinks the window before the process dies: the respawn only
+    // happens on the user's NEXT send (human-timescale away), by which point
+    // SIGTERM + the 3s SIGKILL backstop have reaped this process — so two
+    // `claude --resume` processes never run against the same session id.
+    this.shutdown();
   }
 
   hasResumeFailed(): boolean {
@@ -497,9 +620,86 @@ class ClaudeSession {
 
     this.emit({ type: 'event', event: ev });
 
-    // turn end = `result` event from the CLI
-    if (ev?.type === 'result') {
+    // Set when this event is a fatal OAuth failure. Suppresses the normal
+    // turnEnd below: the turn is NOT done, it's being recovered (respawn +
+    // replay) by index.ts. Emitting turnEnd here would let index.ts clear its
+    // recovery arm and the in-flight turn, defeating the auto-replay. The
+    // failure arrives as a `result` (with the auth text in `ev.result`) far
+    // more often than as raw stderr, so this guard is load-bearing.
+    let fatalAuthThisEvent = false;
+
+    // Surface API failures the CLI otherwise buries as ordinary stream events.
+    // A `result` with is_error / api_error_status is otherwise invisible — the
+    // turn just ends and the user sees nothing. (Ported from Rivendell's runner,
+    // which already surfaces these; samwise-2 was silent.)
+    if (ev?.type === 'result' && (ev.is_error === true || typeof ev.api_error_status === 'number')) {
+      const status = typeof ev.api_error_status === 'number' ? ` (${ev.api_error_status})` : '';
+      const reason = typeof ev.result === 'string' && ev.result.trim()
+        ? ev.result.trim()
+        : `Request failed${status}`;
+      // Only a 401 (dead/rotated OAuth token) or a local OAuth-refresh failure
+      // is recoverable by respawning a fresh process that re-reads disk creds.
+      // A 403 is usually a plan/permission problem that a respawn can't fix —
+      // surface it, but don't kill the session over it.
+      const fatalAuth = ev.api_error_status === 401
+        || (typeof ev.result === 'string' && isAuthFailureText(ev.result));
+      const statusSuffix = typeof ev.api_error_status === 'number' ? ` (${ev.api_error_status})` : '';
+      this.emit({
+        type: 'error',
+        message: fatalAuth
+          ? `Claude OAuth session expired${statusSuffix}. Reconnecting with fresh credentials…`
+          : reason,
+        code: typeof ev.api_error_status === 'number'
+          ? String(ev.api_error_status)
+          : (fatalAuth ? 'oauth' : undefined),
+        retryable: ev.api_error_status === 429,
+        fatal: fatalAuth,
+      });
+      if (fatalAuth) {
+        fatalAuthThisEvent = true;
+        this.failAuth();
+      }
+    }
+
+    // A mid-turn API retry storm is otherwise invisible — the session just
+    // appears to hang while the CLI silently retries up to 10× with backoff.
+    // A 401/403 means the OAuth token is dead: retrying in-process can't fix it,
+    // so surface it and kill the child (failAuth) to force a fresh respawn on the
+    // next send. A 429 is retryable — surface it and let the CLI back off.
+    if (ev?.type === 'system' && ev.subtype === 'api_retry' && typeof ev.error_status === 'number') {
+      // error_status is always present here, so key strictly off 401 — a 403
+      // carrying error:"authentication_failed" is a plan/permission problem a
+      // respawn can't fix, so it must NOT be treated as fatal.
+      const fatalAuth = ev.error_status === 401;
+      if (fatalAuth) {
+        this.emit({
+          type: 'error',
+          message: `Claude authentication failed (${ev.error_status}). Reconnecting with fresh credentials…`,
+          code: String(ev.error_status),
+          fatal: true,
+        });
+        fatalAuthThisEvent = true;
+        this.failAuth();
+      } else {
+        const attempt = ev.attempt ? ` (attempt ${ev.attempt}/${ev.max_retries ?? '?'})` : '';
+        this.emit({
+          type: 'error',
+          message: `API ${ev.error} ${ev.error_status}${attempt} — retrying…`,
+          code: String(ev.error_status),
+          retryable: true,
+        });
+      }
+    }
+
+    // turn end = `result` event from the CLI. But a fatal-auth result is NOT a
+    // finished turn — it's being recovered (respawn + replay). Suppressing the
+    // turnEnd keeps the client in its streaming state and preserves index.ts's
+    // recovery arm + in-flight turn so the replay can fire. The replayed turn
+    // emits its own result → turnEnd when it genuinely completes.
+    if (ev?.type === 'result' && !fatalAuthThisEvent) {
       this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
+      this.turnStartedAt = null;
+    } else if (ev?.type === 'result') {
       this.turnStartedAt = null;
     }
   }
@@ -527,6 +727,11 @@ export async function getOrCreateSession(opts: {
   cli: CliKind;
   repoPath: string;
   chatId?: string;
+  /** Chosen Claude model/effort (claude/assistant only). When provided they win
+   *  over the persisted selection and are persisted; a change from the warm
+   *  process's spawn args recycles it. Ignored by codex/banana. */
+  model?: string;
+  effort?: string;
 }): Promise<AnySession> {
   const chatId = opts.chatId || 'main';
   if (opts.cli === 'codex') {
@@ -538,20 +743,54 @@ export async function getOrCreateSession(opts: {
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd, chatId);
   const planMode = await getPlanMode(opts.cli, cwd, chatId);
+  const { model, effort } = await resolveClaudeSelectionForSession(
+    opts.cli, cwd, chatId, opts.model, opts.effort,
+  );
 
   const existing = sessions.get(key);
-  // If a warm session is alive but its plan-mode flag doesn't match what
-  // we want, recycle it. The session_id is preserved in storage so the new
-  // process resumes the same conversation — just with different spawn args.
-  if (existing && existing.isAlive() && existing.planMode === planMode) return existing;
+  // If a warm session is alive but its spawn args (plan mode, model, effort)
+  // don't match what we want, recycle it. The session_id is preserved in
+  // storage so the new process resumes the same conversation — just with
+  // different spawn args.
+  if (
+    existing && existing.isAlive()
+    && existing.planMode === planMode
+    && existing.model === model
+    && existing.effort === effort
+  ) {
+    return existing;
+  }
   if (existing) {
     existing.shutdown();
     sessions.delete(key);
   }
 
   const resumeId = (await getSessionId(opts.cli, cwd, chatId)) ?? null;
-  const session = await spawnSession(opts.cli, cwd, chatId, resumeId, key, planMode);
+  const session = await spawnSession(opts.cli, cwd, chatId, resumeId, key, planMode, model, effort);
   return session;
+}
+
+/** Resolve the Claude model/effort for a spawn. A browser-provided value (from
+ *  the send/steer payload) wins and is persisted; otherwise the last persisted
+ *  selection is used; otherwise the catalog default (Opus 5 / max). Persisting
+ *  here keeps every caller — hello, send, recovery replay — spawning the SAME
+ *  model without re-sending it, mirroring how getPlanMode is read fresh. */
+async function resolveClaudeSelectionForSession(
+  cli: CliKind,
+  cwd: string,
+  chatId: string,
+  requestedModel?: string,
+  requestedEffort?: string,
+): Promise<{ model: string; effort: string }> {
+  const stored = await getClaudeSelection(cli, cwd, chatId);
+  const resolved = resolveClaudeSelection(
+    requestedModel ?? stored.model,
+    requestedEffort ?? stored.effort,
+  );
+  if (resolved.model !== stored.model || resolved.effort !== stored.effort) {
+    await setClaudeSelection(cli, cwd, resolved.model, resolved.effort, chatId);
+  }
+  return resolved;
 }
 
 async function spawnSession(
@@ -561,9 +800,11 @@ async function spawnSession(
   resumeId: string | null,
   key: string,
   planMode: boolean,
+  model: string,
+  effort: string,
   attempt = 0,
 ): Promise<ClaudeSession> {
-  const session = new ClaudeSession(cli, cwd, chatId, resumeId, planMode);
+  const session = new ClaudeSession(cli, cwd, chatId, resumeId, planMode, model, effort);
   sessions.set(key, session);
 
   session.subscribe((se) => {
@@ -580,7 +821,7 @@ async function spawnSession(
     // something else is wrong.
     if (resumeId && attempt === 0) {
       await setSessionId(cli, cwd, '', chatId); // clear the bad id
-      return spawnSession(cli, cwd, chatId, null, key, planMode, attempt + 1);
+      return spawnSession(cli, cwd, chatId, null, key, planMode, model, effort, attempt + 1);
     }
     throw new Error('claude exited before initializing — check the CLI install or auth');
   }
@@ -650,6 +891,9 @@ export async function freshStart(opts: {
   const cwd = opts.cli === 'assistant' ? ASSISTANT_HUB_PATH : opts.repoPath;
   const key = keyOf(opts.cli, cwd, chatId);
   const planMode = await getPlanMode(opts.cli, cwd, chatId);
+  // Fresh thread keeps the chosen model/effort — read the persisted selection
+  // (the next send re-sends it anyway and would recycle if it differs).
+  const { model, effort } = await resolveClaudeSelectionForSession(opts.cli, cwd, chatId);
   const existing = sessions.get(key);
   if (existing) {
     // Don't clear listeners — let the child's exit handler emit `closed` to
@@ -660,7 +904,7 @@ export async function freshStart(opts: {
   }
   await clearEventLog(key);
   await setSessionId(opts.cli, cwd, '', chatId); // drop the stored id so we don't --resume
-  return spawnSession(opts.cli, cwd, chatId, null, key, planMode);
+  return spawnSession(opts.cli, cwd, chatId, null, key, planMode, model, effort);
 }
 
 export async function dropSession(cli: CliKind, repoPath: string, chatId = 'main'): Promise<void> {

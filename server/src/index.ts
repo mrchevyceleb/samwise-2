@@ -20,9 +20,12 @@ import {
   pruneIdleClaudeSessions,
   respondToToolForSession,
   setPlanModeForSession,
+  refreshClaudeCredentials,
   type AnySession,
+  type ClaudeSession,
   type CliKind,
 } from './runner.ts';
+import { resolveClaudeSelection } from './claude-models.ts';
 import {
   shutdownAllCodexSessions,
   activeCodexSessions,
@@ -237,8 +240,11 @@ type ClientSend = {
   chatId?: string;
   text: string;
   images?: Array<{ mediaType: string; base64: string }>;
-  /** Chosen model id, only used by the Banana runner. */
+  /** Chosen model id. Banana/Codex apply it per turn; Claude/assistant spawn
+   *  with it (a change recycles the warm process). */
   model?: string;
+  /** Reasoning effort. Codex applies it per turn; Claude/assistant spawn with it. */
+  effort?: string;
 };
 type ClientFresh = { type: 'freshStart'; cli: CliKind; repo: string; chatId?: string };
 type ClientStop = { type: 'stop'; cli: CliKind; repo: string; chatId?: string };
@@ -249,8 +255,11 @@ type ClientSteer = {
   chatId?: string;
   text: string;
   images?: Array<{ mediaType: string; base64: string }>;
-  /** Chosen model id, only used by the Banana runner. */
+  /** Chosen model id. Banana/Codex apply it per turn; Claude/assistant spawn
+   *  with it (a change recycles the warm process). */
   model?: string;
+  /** Reasoning effort. Codex applies it per turn; Claude/assistant spawn with it. */
+  effort?: string;
 };
 type ClientToolResponse = {
   type: 'toolResponse';
@@ -316,6 +325,24 @@ wss.on('connection', (ws, req) => {
   let activeSessionKey: string | null = null;
   let activeSession: AnySession | null = null;
 
+  // ── OAuth auto-recovery ──────────────────────────────────────────────────
+  // The warm claude child holds an OAuth token from spawn time. When another
+  // concurrent claude process rotates the shared refresh token, this child's
+  // next refresh fails ("OAuth session expired…"). The disk credentials are
+  // almost always still fresh, so on a fatal auth error we respawn from disk
+  // and replay the in-flight turn ONCE — the user never sees the failure.
+  // Bounded per-turn so genuinely-dead disk creds surface a real error instead
+  // of looping. Only the persistent claude/assistant runners use this (codex
+  // and banana are spawn-per-turn with separate auth).
+  let inflightTurn: {
+    text: string;
+    images?: Array<{ mediaType: string; base64: string }>;
+    model?: string;
+    effort?: string;
+  } | null = null;
+  let authReplayArmed = false; // a fatal auth error was seen this turn; replay pending on close
+  let authReplayDone = false;  // already replayed once this turn; don't loop
+
   const safeSend = (msg: object) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
   };
@@ -358,6 +385,11 @@ wss.on('connection', (ws, req) => {
         safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey, sessionId, chatId });
       } else if (sev.type === 'turnEnd') {
         busy = false;
+        // Turn completed (including after a successful auth-recovery replay) —
+        // clear the in-flight turn so it can't be replayed again.
+        inflightTurn = null;
+        authReplayArmed = false;
+        authReplayDone = false;
         safeSend({
           type: 'turnEnd',
           sessionId: sev.sessionId ?? sessionId,
@@ -366,8 +398,47 @@ wss.on('connection', (ws, req) => {
           chatId,
         });
       } else if (sev.type === 'error') {
-        if (busy) {
+        const authFatal = sev.fatal === true && (sev.code === 'oauth' || sev.code === '401');
+        // Seamless OAuth recovery: arm a one-shot respawn+replay and SUPPRESS
+        // the raw error so the user never sees it. The replay fires from the
+        // `closed` branch below, once the stale child has been reaped (so two
+        // `claude --resume` processes never race the same session id). Only for
+        // the persistent claude/assistant runners with a turn to replay, and
+        // only once per turn (authReplayDone) so dead disk creds can't loop.
+        if (
+          authFatal && !authReplayDone && inflightTurn &&
+          (cliKind === 'claude' || cliKind === 'assistant')
+        ) {
+          authReplayArmed = true;
+          console.log(`[ws#${wsId}] armed OAuth auto-recovery (code=${sev.code})`);
+          return;
+        }
+        // Recovery already spent this turn and it STILL can't authenticate — the
+        // source login is genuinely dead (keepalive couldn't heal it). Surface
+        // an actionable message and end the turn ourselves: the runner suppresses
+        // turnEnd on fatal-auth results, so without this the spinner would hang.
+        if (authFatal && authReplayDone) {
+          busy = false;
+          inflightTurn = null;
+          authReplayArmed = false;
+          safeSend({
+            type: 'error',
+            message: 'Claude could not authenticate even after reconnecting. Its login has expired on the server — open a terminal on the host and run `claude`, then `/login`.',
+            seq: se.seq, sessionKey, sessionId, chatId,
+          });
+          safeSend({ type: 'turnEnd', sessionKey, sessionId, chatId });
+          return;
+        }
+        // Fatal errors must ALWAYS reach the client — even when no turn is in
+        // flight — otherwise the chat dies silently. Only harmless idle stderr
+        // chatter is swallowed.
+        if (busy || sev.fatal) {
           safeSend({ type: 'error', message: sev.message, seq: se.seq, sessionKey, sessionId, chatId });
+          // NB: do NOT clear `busy` here. failAuth()'s deferred shutdown fires a
+          // `closed` event next; the closed branch only emits `sessionClosed`
+          // (which clears the client spinner in ~250ms) while `busy` is true.
+          // Zeroing busy would swallow it and strand the spinner until the 45s
+          // silence watchdog.
         } else {
           console.log(`[ws#${wsId}] swallowed idle stderr: ${String(sev.message).slice(0, 200)}`);
         }
@@ -379,6 +450,19 @@ wss.on('connection', (ws, req) => {
         // race for claude (child exits asynchronously after SIGTERM); now
         // also exercised by codex since CodexSession.shutdown emits closed.
         if (bindGen !== myGen) return;
+        // OAuth auto-recovery: the stale child is now reaped, so it's safe to
+        // respawn from fresh disk creds and replay the in-flight turn. Skip the
+        // sessionClosed notice — the replay's rebound/turnStart drives the UI,
+        // so the user sees a brief pause then their answer, no error.
+        if (authReplayArmed && !authReplayDone) {
+          sessionPromise = null;
+          activeSessionKey = null;
+          activeSession = null;
+          unsubscribe?.();
+          unsubscribe = null;
+          void replayAfterAuthRecovery();
+          return;
+        }
         if (busy) {
           safeSend({ type: 'sessionClosed', code: sev.code, seq: se.seq, sessionKey, sessionId, chatId });
         } else {
@@ -395,6 +479,50 @@ wss.on('connection', (ws, req) => {
 
     unsubscribe = session.subscribe(dispatch, sinceSeq);
     return session;
+  };
+
+  // Respawn a fresh claude child (re-reads credentials from disk) and replay
+  // the in-flight turn after an OAuth auth failure. Called from the session's
+  // `closed` handler once the stale child is reaped, so two `claude --resume`
+  // processes never race the same session id. Bounded by authReplayDone so a
+  // genuinely-dead disk credential surfaces a real error instead of looping.
+  const replayAfterAuthRecovery = async (): Promise<void> => {
+    if (authReplayDone || !authReplayArmed) return;
+    if (!inflightTurn || !cliKind || !repoPath) return;
+    if (cliKind === 'codex' || cliKind === 'banana') return;
+    authReplayArmed = false;
+    authReplayDone = true;
+    const turn = inflightTurn;
+    const gen = turnGeneration;
+    console.log(`[ws#${wsId}] OAuth auto-recovery: re-syncing creds, respawning + replaying turn`);
+    // Re-sync fresh tokens into CLAUDE_CONFIG_DIR before respawning. Without
+    // this the fresh child re-reads the same blanked creds and fails again —
+    // this is the step that actually clears the recurring outage.
+    await refreshClaudeCredentials();
+    if (gen !== turnGeneration) return;     // user moved on during the refresh
+    try {
+      // Respawn with the turn's model/effort so recovery keeps the picker choice.
+      const session = await bindSession(getOrCreateSession({
+        cli: cliKind, repoPath, chatId, model: turn.model, effort: turn.effort,
+      }));
+      if (!session) return;                 // superseded by a newer bind
+      if (gen !== turnGeneration) return;   // user moved on (stop / steer / switch)
+      busy = true;
+      const sid = session.sessionId();
+      safeSend({ type: 'sessionRebound', sessionKey: session.key, sessionId: sid, chatId });
+      safeSend({ type: 'turnStart', sessionKey: session.key, sessionId: sid, chatId });
+      if ('send' in session) (session as any).send(turn.text, turn.images);
+      // If this fresh child ALSO fails auth, its fatal error lands with
+      // authReplayDone === true, so the error branch surfaces the actionable
+      // "run /login" message instead of looping.
+    } catch (e) {
+      busy = false;
+      console.warn(`[ws#${wsId}] auth recovery failed:`, (e as Error).message);
+      safeSend({ type: 'error', message: `Could not re-authenticate Claude: ${(e as Error).message}` });
+      if (activeSessionKey) {
+        safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId(), chatId });
+      }
+    }
   };
 
   // Watchdog for the first message of a session: if the freshly-spawned claude
@@ -518,8 +646,11 @@ wss.on('connection', (ws, req) => {
         cliKind = msg.cli;
         repoPath = msg.repo;
         // Spin up a fresh session immediately and fire the new prompt at it.
+        // model/effort spawn Claude at the chosen tier (ignored by codex/banana).
         const session = await bindSession(
-          getOrCreateSession({ cli: msg.cli, repoPath: msg.repo, chatId }),
+          getOrCreateSession({
+            cli: msg.cli, repoPath: msg.repo, chatId, model: msg.model, effort: msg.effort,
+          }),
         );
         if (!session) return;  // superseded; newer bind drives the next turn
         busy = true;
@@ -528,8 +659,18 @@ wss.on('connection', (ws, req) => {
           if (msg.cli === 'banana') {
             await (session as any).send(msg.text, { images: msg.images, model: msg.model });
           } else if (msg.cli === 'codex') {
-            await (session as any).send(msg.text, msg.images);
+            await (session as any).send(msg.text, {
+              images: msg.images,
+              model: msg.model,
+              effort: msg.effort,
+            });
           } else {
+            // Claude/assistant only: record the turn (with its model/effort) so
+            // OAuth auto-recovery can replay it, and reset the per-turn one-shot
+            // recovery guards. The session was just spawned at this model above.
+            inflightTurn = { text: msg.text, images: msg.images, model: msg.model, effort: msg.effort };
+            authReplayArmed = false;
+            authReplayDone = false;
             (session as any).send(msg.text, msg.images);
             void retryOnceIfFirstSendStuck(session, msg.text, turnGeneration, msg.images);
           }
@@ -557,6 +698,10 @@ wss.on('connection', (ws, req) => {
         const stopSid = currentSessionId();
         await interruptSession({ cli: msg.cli, repoPath: msg.repo, chatId });
         busy = false;
+        // Stopped turn: never auto-replay it.
+        inflightTurn = null;
+        authReplayArmed = false;
+        authReplayDone = false;
         if (stopKey) {
           safeSend({ type: 'turnEnd', sessionKey: stopKey, sessionId: stopSid, chatId });
         }
@@ -584,6 +729,10 @@ wss.on('connection', (ws, req) => {
         cliKind = msg.cli;
         repoPath = msg.repo;
         busy = false;
+        // Fresh conversation: drop any pending auto-replay from the old thread.
+        inflightTurn = null;
+        authReplayArmed = false;
+        authReplayDone = false;
         safeSend({
           type: 'freshStarted',
           cli: msg.cli,
@@ -721,13 +870,42 @@ wss.on('connection', (ws, req) => {
         if (!session) throw new Error('session unavailable, please retry');
         if ('send' in session) {
           // Banana takes a SendOpts object (carries the chosen model). Codex
-          // takes images positionally and its async send must be awaited.
+          // takes a validated model/effort options object and its async send must be awaited.
           // Claude reads images from stdin.
           if (cliKind === 'banana') {
             await (session as any).send(msg.text, { images: msg.images, model: msg.model });
           } else if (cliKind === 'codex') {
-            await (session as any).send(msg.text, msg.images);
+            await (session as any).send(msg.text, {
+              images: msg.images,
+              model: msg.model,
+              effort: msg.effort,
+            });
           } else {
+            // Claude/assistant: --model / --effort are spawn-time args on the
+            // warm process. If the client sent an explicit picker choice that
+            // differs from what the warm child spawned with, recycle to it first
+            // (the resumed session_id keeps the conversation; the session key is
+            // model-independent, so the already-emitted turnStart stays valid).
+            // Only act on an EXPLICIT model: a model-less send (assistant, or a
+            // legacy client) must not resolve to the bare default and recycle
+            // over the persisted selection. cliKind/repoPath are set here (a
+            // bound session exists) but TS widens them to |null.
+            const warm = session as ClaudeSession;
+            if (typeof msg.model === 'string' && cliKind && repoPath) {
+              const desired = resolveClaudeSelection(msg.model, msg.effort);
+              if (warm.model !== desired.model || warm.effort !== desired.effort) {
+                const rebound = await bindSession(getOrCreateSession({
+                  cli: cliKind, repoPath, chatId, model: msg.model, effort: msg.effort,
+                }));
+                if (!rebound) return;  // superseded by a newer bind
+                session = rebound;
+              }
+            }
+            // Record the turn (with its model/effort) so OAuth auto-recovery can
+            // replay it, and reset the per-turn one-shot recovery guards.
+            inflightTurn = { text: msg.text, images: msg.images, model: msg.model, effort: msg.effort };
+            authReplayArmed = false;
+            authReplayDone = false;
             (session as any).send(msg.text, msg.images);
             void retryOnceIfFirstSendStuck(session, msg.text, turnGeneration, msg.images);
           }

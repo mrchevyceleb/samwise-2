@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { IDLE_TTL_MS } from './runner.ts';
 import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
+import { resolveCodexSelection } from './codex-models.ts';
 import {
   appendEventLog,
   clearEventLog,
@@ -75,6 +76,7 @@ export type Listener = (e: SeqEvent) => void;
 let nextSyntheticId = 1;
 const synth = (prefix: string) => `${prefix}_${nextSyntheticId++}`;
 type ChatImage = { mediaType: string; base64: string };
+type CodexSendOptions = { images?: ChatImage[]; model?: unknown; effort?: unknown };
 type ToolUseBlock = { index: number; toolUseId: string };
 type CodexUsage = {
   input_tokens: number;
@@ -88,12 +90,6 @@ type CodexTurnState = {
   toolUseBlocks: Map<string, ToolUseBlock>;
   usage: CodexUsage | null;
 };
-
-// Model + reasoning effort every `codex exec` runs with. Single source of
-// truth, mirrors AutoSam's review.rs pins. Valid efforts: minimal|low|medium|
-// high|xhigh; xhigh is the top tier.
-const CODEX_MODEL = 'gpt-5.5';
-const CODEX_REASONING_CONFIG = 'model_reasoning_effort="xhigh"';
 
 const CODEX_TURN_PREAMBLE = [
   '<samwise-codex-runtime>',
@@ -243,7 +239,8 @@ export class CodexSession {
     this.listeners.clear();
   }
 
-  async send(text: string, images?: ChatImage[]): Promise<void> {
+  async send(text: string, opts: CodexSendOptions = {}): Promise<void> {
+    const images = opts.images;
     if (this.busy) {
       this.emit({
         type: 'error',
@@ -251,6 +248,10 @@ export class CodexSession {
       });
       return;
     }
+    const { model: codexModel, effort: codexEffort } = resolveCodexSelection(
+      opts.model,
+      opts.effort,
+    );
     this.busy = true;
     // Echo for reconnect replay (codex's events don't re-emit the user prompt).
     this.emit({
@@ -294,13 +295,14 @@ export class CodexSession {
       : ['--dangerously-bypass-approvals-and-sandbox'];
 
     const prompt = `${CODEX_TURN_PREAMBLE}\n\n${text}`;
+    const codexReasoningConfig = `model_reasoning_effort="${codexEffort}"`;
     const args: string[] = this.threadId
       ? [
           'exec',
           'resume',
           '--json',
-          '-m', CODEX_MODEL,
-          '-c', CODEX_REASONING_CONFIG,
+          '-m', codexModel,
+          '-c', codexReasoningConfig,
           ...sandboxArgs,
           ...imageArgs,
           this.threadId,
@@ -309,8 +311,8 @@ export class CodexSession {
       : [
           'exec',
           '--json',
-          '-m', CODEX_MODEL,
-          '-c', CODEX_REASONING_CONFIG,
+          '-m', codexModel,
+          '-c', codexReasoningConfig,
           ...sandboxArgs,
           ...imageArgs,
           prompt,

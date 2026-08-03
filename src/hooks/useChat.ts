@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChatBlock, CompanionId, Repo } from '../data/types';
+import { contextWindowForCodexModel } from '../components/primitives/codexModels';
 
 type Status = 'idle' | 'connecting' | 'ready' | 'streaming' | 'closed' | 'error';
 
@@ -16,13 +17,12 @@ export type ContextUsage = {
 
 const DEFAULT_WINDOW_TOKENS = 200_000;
 const LARGE_WINDOW_TOKENS = 1_000_000;
-const CODEX_WINDOW_TOKENS = 400_000;
 // Banana runs OpenRouter models; 200k is a sane default that covers most
 // current models (the meter self-grows to 1M if a turn ever reports more).
 const BANANA_WINDOW_TOKENS = 200_000;
 
-function defaultWindowForCli(cli: CompanionId): number {
-  if (cli === 'codex') return CODEX_WINDOW_TOKENS;
+function defaultWindowForCli(cli: CompanionId, model?: string): number {
+  if (cli === 'codex') return contextWindowForCodexModel(model);
   if (cli === 'banana') return BANANA_WINDOW_TOKENS;
   return DEFAULT_WINDOW_TOKENS;
 }
@@ -288,17 +288,26 @@ export function useChat(opts: {
   enabled: boolean;
   initialMessage?: string | null;
   onInitialMessageSent?: () => void;
-  /** Model id for the Banana runner. Ignored by Claude and Codex. */
+  /** Model id for the spawn-per-turn Banana and Codex runners. */
   model?: string;
+  /** Codex reasoning effort. Ignored by Claude and Banana. */
+  effort?: string;
 }) {
-  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model } = opts;
-  // Mirror the chosen model into a ref so the WS send/steer paths read the
-  // latest value without re-subscribing. Only the Banana runner uses it.
-  const modelRef = useRef<string | undefined>(model);
-  modelRef.current = model;
-  /** Build the model field for a WS payload — present only for Banana. */
-  const modelField = (): { model?: string } =>
-    cli === 'banana' && modelRef.current ? { model: modelRef.current } : {};
+  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model, effort } = opts;
+  // Mirror the selection before paint so a send/steer event can never observe
+  // the prior render's pair after the picker already shows the new values.
+  const selectionRef = useRef<{ model?: string; effort?: string }>({ model, effort });
+  useLayoutEffect(() => {
+    selectionRef.current = { model, effort };
+  }, [model, effort]);
+  const modelField = useCallback((): { model?: string; effort?: string } => {
+    const selection = selectionRef.current;
+    if (cli === 'banana' && selection.model) return { model: selection.model };
+    if ((cli === 'codex' || cli === 'claude') && selection.model && selection.effort) {
+      return { model: selection.model, effort: selection.effort };
+    }
+    return {};
+  }, [cli]);
   // Blocks and the conversation key they belong to live in a single state
   // value so they always update atomically. A previous bug stored the key in
   // a ref that was updated synchronously while blocks were updated via
@@ -321,7 +330,7 @@ export function useChat(opts: {
   const pendingActionRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(null);
-  const windowTokensRef = useRef(defaultWindowForCli(cli));
+  const windowTokensRef = useRef(defaultWindowForCli(cli, model));
   /** Server-confirmed plan-mode flag. Updated on `ready` and `planModeChanged`.
    *  `null` means the server hasn't told us yet. */
   const [planMode, setPlanModeState] = useState<boolean | null>(null);
@@ -385,7 +394,7 @@ export function useChat(opts: {
     } else if (!initialSendInFlightRef.current) {
       initialMessageRef.current = null;
     }
-  }, [chatId, cli, initialMessage, repo, status]);
+  }, [chatId, cli, initialMessage, modelField, repo, status]);
 
   // Save to localStorage whenever blocks OR lastSeq change. lastSeq must be
   // a dep so seq advances are persisted even when the event didn't mutate
@@ -424,7 +433,7 @@ export function useChat(opts: {
     setChat({ key: expectedKey, blocks: stored });
     turnIdRef.current = '';
     reconnectAttemptRef.current = 0;
-    windowTokensRef.current = defaultWindowForCli(cli);
+    windowTokensRef.current = defaultWindowForCli(cli, selectionRef.current.model);
     // Sequence we've already seen (persisted) — replay only what's newer.
     const restoredSeq = readStoredSeq(cli, repo.path, chatId);
     lastSeqRef.current = restoredSeq;
@@ -775,7 +784,7 @@ export function useChat(opts: {
         wsRef.current = null;
       }
     };
-  }, [enabled, repo?.path, cli, chatId]);
+  }, [enabled, repo?.path, cli, chatId, modelField]);
 
   const send = (
     text: string,
@@ -885,8 +894,20 @@ export function useChat(opts: {
     }));
   };
 
+  const displayedUsage = usage && cli === 'codex'
+    ? (() => {
+        const windowTokens = contextWindowForCodexModel(model);
+        const total = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreateTokens;
+        return {
+          ...usage,
+          fraction: Math.min(total / windowTokens, 1),
+          windowTokens,
+        };
+      })()
+    : usage;
+
   return {
-    blocks, status, error, send, steer, freshStart, stop, reconnect, usage,
+    blocks, status, error, send, steer, freshStart, stop, reconnect, usage: displayedUsage,
     planMode, setPlanMode, respondToTool,
   };
 }

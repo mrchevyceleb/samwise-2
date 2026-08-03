@@ -14,6 +14,20 @@ import { useChat } from './hooks/useChat';
 import { useChronicle } from './hooks/useChronicle';
 import { useCommands } from './hooks/useCommands';
 import { readStoredBananaModel } from './components/primitives/BananaModelPicker';
+import {
+  normalizeCodexEffort,
+  normalizeCodexModel,
+  readStoredCodexEffort,
+  readStoredCodexModel,
+  writeStoredCodexSelection,
+} from './components/primitives/codexModels';
+import {
+  normalizeClaudeEffort,
+  normalizeClaudeModel,
+  readStoredClaudeEffort,
+  readStoredClaudeModel,
+  writeStoredClaudeSelection,
+} from './components/primitives/claudeModels';
 import { useLive } from './hooks/useLive';
 import { useLiveBranch } from './hooks/useLiveBranch';
 import { useTheme } from './hooks/useTheme';
@@ -140,6 +154,38 @@ export default function App() {
   // Chosen Banana model. Defaults to the last pick (initial default
   // monkey/silverback). Only the Banana runner sends it.
   const [bananaModel, setBananaModel] = useState<string>(readStoredBananaModel);
+  const [codexModel, setCodexModel] = useState<string>(readStoredCodexModel);
+  const [codexEffort, setCodexEffort] = useState<string>(
+    () => readStoredCodexEffort(codexModel),
+  );
+  const changeCodexModel = (value: string) => {
+    const model = normalizeCodexModel(value);
+    const effort = normalizeCodexEffort(model, codexEffort);
+    setCodexModel(model);
+    setCodexEffort(effort);
+    writeStoredCodexSelection(model, effort);
+  };
+  const changeCodexEffort = (value: string) => {
+    const effort = normalizeCodexEffort(codexModel, value);
+    setCodexEffort(effort);
+    writeStoredCodexSelection(codexModel, effort);
+  };
+  const [claudeModel, setClaudeModel] = useState<string>(readStoredClaudeModel);
+  const [claudeEffort, setClaudeEffort] = useState<string>(
+    () => readStoredClaudeEffort(claudeModel),
+  );
+  const changeClaudeModel = (value: string) => {
+    const model = normalizeClaudeModel(value);
+    const effort = normalizeClaudeEffort(model, claudeEffort);
+    setClaudeModel(model);
+    setClaudeEffort(effort);
+    writeStoredClaudeSelection(model, effort);
+  };
+  const changeClaudeEffort = (value: string) => {
+    const effort = normalizeClaudeEffort(claudeModel, value);
+    setClaudeEffort(effort);
+    writeStoredClaudeSelection(claudeModel, effort);
+  };
   const [assistantEngine, setAssistantEngineState] = useState<AssistantEngine>(readAssistantEngine);
   const setAssistantEngine = (e: AssistantEngine) => {
     setAssistantEngineState(e);
@@ -153,7 +199,13 @@ export default function App() {
     enabled: view === 'conversation' && !!repo,
     initialMessage: pendingFirstMessage,
     onInitialMessageSent: () => setPendingFirstMessage(null),
-    model: bananaModel,
+    model: companion === 'codex' ? codexModel
+      : companion === 'banana' ? bananaModel
+      : companion === 'claude' ? claudeModel
+      : undefined,
+    effort: companion === 'codex' ? codexEffort
+      : companion === 'claude' ? claudeEffort
+      : undefined,
   });
 
   // Once repos load, bind the restore-target path to a real Repo object.
@@ -305,6 +357,30 @@ export default function App() {
     localStorage.setItem(CHRONICLE_COLLAPSED_KEY, chronicleCollapsed ? '1' : '0');
   }, [chronicleCollapsed]);
 
+  // Model-picker wiring for the active companion. Claude and Codex expose a
+  // model + reasoning-effort pair; Banana a model only; Assistant none.
+  const activeModelPicker: 'banana' | 'codex' | 'claude' | undefined =
+    companion === 'banana' ? 'banana'
+    : companion === 'codex' ? 'codex'
+    : companion === 'claude' ? 'claude'
+    : undefined;
+  const pickerModel =
+    companion === 'codex' ? codexModel
+    : companion === 'claude' ? claudeModel
+    : bananaModel;
+  const pickerEffort =
+    companion === 'codex' ? codexEffort
+    : companion === 'claude' ? claudeEffort
+    : undefined;
+  const onPickerModelChange =
+    companion === 'codex' ? changeCodexModel
+    : companion === 'claude' ? changeClaudeModel
+    : setBananaModel;
+  const onPickerEffortChange =
+    companion === 'codex' ? changeCodexEffort
+    : companion === 'claude' ? changeClaudeEffort
+    : undefined;
+
   if (isMobile) {
     return (
       <div className={appClass}>
@@ -345,9 +421,11 @@ export default function App() {
             onTogglePlanMode={chat.setPlanMode}
             planMode={chat.planMode}
             acceptImages={true}
-            showModelPicker={companion === 'banana'}
-            model={bananaModel}
-            onModelChange={setBananaModel}
+            modelPicker={activeModelPicker}
+            model={pickerModel}
+            effort={pickerEffort}
+            onModelChange={onPickerModelChange}
+            onEffortChange={onPickerEffortChange}
           />
         )}
         <MobileChronicleSheet
@@ -428,9 +506,11 @@ export default function App() {
             onTogglePlanMode={chat.setPlanMode}
             planMode={chat.planMode}
             acceptImages={true}
-            showModelPicker={companion === 'banana'}
-            model={bananaModel}
-            onModelChange={setBananaModel}
+            modelPicker={activeModelPicker}
+            model={pickerModel}
+            effort={pickerEffort}
+            onModelChange={onPickerModelChange}
+            onEffortChange={onPickerEffortChange}
           />
         )}
       </main>
