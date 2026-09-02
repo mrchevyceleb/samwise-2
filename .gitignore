@@ -36,3 +36,4 @@ dist-ssr
 secrets.json
 credentials.json
 service-account.json
+.agent-one/
