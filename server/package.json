@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:codex-models": "tsx --test src/codex-models.test.ts",
     "test:claude-models": "tsx --test src/claude-models.test.ts",
-    "test:auth": "tsx --test src/runner-auth.test.ts"
+    "test:auth": "tsx --test src/runner-auth.test.ts",
+    "test:archive": "tsx --test src/archive.test.ts"
   },
   "dependencies": {
     "@opencode-ai/sdk": "^1.15.7",

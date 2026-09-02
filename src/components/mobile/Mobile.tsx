@@ -169,6 +169,10 @@ export function MobileThreshold({
   reposLoading,
   onSetForth,
   onToggleStar,
+  onToggleArchive,
+  showArchived = false,
+  onToggleShowArchived,
+  archiveError,
   liveSessions = [],
   onSelectLive,
   onDismissLive,
@@ -185,6 +189,10 @@ export function MobileThreshold({
     initialMessage?: string;
   }) => void;
   onToggleStar?: (path: string) => void;
+  onToggleArchive?: (path: string) => void;
+  showArchived?: boolean;
+  onToggleShowArchived?: (v: boolean) => void;
+  archiveError?: string | null;
   liveSessions?: LiveSession[];
   onSelectLive?: (s: LiveSession) => void;
   onDismissLive?: (s: LiveSession) => void;
@@ -207,6 +215,31 @@ export function MobileThreshold({
 
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
   const selectedRepoPath = effectiveRepo?.path;
+
+  // Consult the CURRENT repo list, not the selectedRepo object captured at
+  // click time: its archived flag goes stale as soon as a toggle lands.
+  const currentRepo = (path: string | undefined) => repos.find((r) => r.path === path);
+
+  // Archiving the selected repo hides its row (when the archived shelf is
+  // closed). Drop the selection so the user cannot set forth into a repo
+  // they can no longer see. Restoring keeps the row visible, so the
+  // selection survives that direction.
+  const handleArchive = (path: string) => {
+    const cur = currentRepo(path);
+    if (selectedRepo?.path === path && cur && !cur.archived && !showArchived) {
+      setSelectedRepo(undefined);
+    }
+    onToggleArchive?.(path);
+  };
+
+  // Hiding the archived shelf can conceal the current selection the same way.
+  const handleToggleShowArchived = () => {
+    const next = !showArchived;
+    onToggleShowArchived?.(next);
+    if (!next && selectedRepo && currentRepo(selectedRepo.path)?.archived) {
+      setSelectedRepo(undefined);
+    }
+  };
 
   // Morph assistant + non-default engine into that engine's cli at boundary.
   // Codex/Banana use the client-supplied cwd, so we only morph once the live
@@ -613,8 +646,10 @@ export function MobileThreshold({
           ) : (
             <>
               {(() => {
-                const starred = regularRepos.filter((r) => r.starred);
-                const rest = regularRepos.filter((r) => !r.starred);
+                const active = regularRepos.filter((r) => !r.archived);
+                const shelved = regularRepos.filter((r) => r.archived);
+                const starred = active.filter((r) => r.starred);
+                const rest = active.filter((r) => !r.starred);
                 return (
                   <>
                     {starred.length > 0 && (
@@ -627,6 +662,7 @@ export function MobileThreshold({
                             selected={r.path === selectedRepoPath}
                             onClick={() => setSelectedRepo(r)}
                             onToggleStar={onToggleStar}
+                            onToggleArchive={handleArchive}
                           />
                         ))}
                         {rest.length > 0 && <PHubLabel label="the rest" />}
@@ -639,8 +675,24 @@ export function MobileThreshold({
                         selected={r.path === selectedRepoPath}
                         onClick={() => setSelectedRepo(r)}
                         onToggleStar={onToggleStar}
+                        onToggleArchive={handleArchive}
                       />
                     ))}
+                    {showArchived && shelved.length > 0 && (
+                      <>
+                        <PHubLabel label="archived" />
+                        {shelved.map((r) => (
+                          <PRepo
+                            key={r.path}
+                            repo={r}
+                            selected={r.path === selectedRepoPath}
+                            onClick={() => setSelectedRepo(r)}
+                            onToggleStar={onToggleStar}
+                            onToggleArchive={handleArchive}
+                          />
+                        ))}
+                      </>
+                    )}
                   </>
                 );
               })()}
@@ -652,6 +704,35 @@ export function MobileThreshold({
                   onClick={() => setSelectedRepo(undefined)}
                 />
               ))}
+              {archiveError && (
+                <div
+                  className="sw-folio"
+                  role="status"
+                  style={{ padding: '8px 8px', fontStyle: 'italic', color: 'var(--ember)' }}
+                >
+                  {archiveError}
+                </div>
+              )}
+              {onToggleShowArchived && (
+                <button
+                  type="button"
+                  className="sw-folio"
+                  aria-pressed={showArchived}
+                  onClick={handleToggleShowArchived}
+                  style={{
+                    background: 'transparent',
+                    border: 0,
+                    padding: '8px 8px',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    fontStyle: 'italic',
+                    fontSize: 11,
+                    color: showArchived ? 'var(--ember)' : 'var(--ink-faint)',
+                  }}
+                >
+                  {showArchived ? 'hide the archived shelf' : 'show the archived shelf'}
+                </button>
+              )}
             </>
           )}
         </div>
@@ -1729,15 +1810,18 @@ function PRepo({
   selected,
   onClick,
   onToggleStar,
+  onToggleArchive,
 }: {
   repo: Repo;
   selected?: boolean;
   onClick?: () => void;
   onToggleStar?: (path: string) => void;
+  onToggleArchive?: (path: string) => void;
 }) {
-  const { branch, recent, pinned, italic, awaits, starred } = repo;
+  const { branch, recent, pinned, italic, awaits, starred, archived } = repo;
   const label = italic ? repo.name : repo.name;
   const canStar = !!onToggleStar && !italic;
+  const canArchive = !!onToggleArchive && !italic;
   return (
     <div
       onClick={onClick}
@@ -1824,6 +1908,34 @@ function PRepo({
         >
           {recent}
         </span>
+      )}
+      {canArchive && (
+        <button
+          type="button"
+          aria-label={archived ? 'restore repo' : 'archive repo'}
+          aria-pressed={!!archived}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleArchive?.(repo.path);
+          }}
+          style={{
+            background: 'transparent',
+            border: 0,
+            padding: 0,
+            cursor: 'pointer',
+            color: archived ? 'var(--ember)' : 'var(--ink-faint)',
+            fontSize: 11,
+            lineHeight: 1,
+            flexShrink: 0,
+            minWidth: 44,
+            minHeight: 44,
+            fontFamily: 'var(--serif-display)',
+            fontStyle: 'italic',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {archived ? 'restore' : 'archive'}
+        </button>
       )}
     </div>
   );

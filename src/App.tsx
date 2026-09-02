@@ -113,6 +113,10 @@ export default function App() {
   const repos = reposState.repos;
   const reposLoading = reposState.status === 'loading';
   const toggleRepoStar = reposState.toggleStar;
+  const toggleRepoArchive = reposState.toggleArchive;
+  const showArchived = reposState.showArchived;
+  const setShowArchived = reposState.setShowArchived;
+  const archiveError = reposState.archiveError;
 
   const [chronicleTick, setChronicleTick] = useState(0);
   const chronicle = useChronicle(chronicleTick);
@@ -390,6 +394,10 @@ export default function App() {
             reposLoading={reposLoading}
             onSetForth={setForth}
             onToggleStar={toggleRepoStar}
+            onToggleArchive={toggleRepoArchive}
+            showArchived={showArchived}
+            onToggleShowArchived={setShowArchived}
+            archiveError={archiveError}
             liveSessions={liveSessions}
             onSelectLive={(s) => {
               openLiveSession(s);
@@ -483,6 +491,10 @@ export default function App() {
             reposLoading={reposLoading}
             onSetForth={setForth}
             onToggleStar={toggleRepoStar}
+            onToggleArchive={toggleRepoArchive}
+            showArchived={showArchived}
+            onToggleShowArchived={setShowArchived}
+            archiveError={archiveError}
             assistantEngine={assistantEngine}
             onAssistantEngineChange={setAssistantEngine}
           />

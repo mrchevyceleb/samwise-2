@@ -35,7 +35,9 @@ function encodeForClaude(absPath: string): string {
 async function buildPathDecoder(): Promise<(encoded: string) => string> {
   let repos: { path: string }[] = [];
   try {
-    repos = await discoverRepos();
+    // includeArchived: archiving hides a repo from the Threshold, but its
+    // past conversations are still chronicle history and must still decode.
+    repos = await discoverRepos({ includeArchived: true });
   } catch {
     repos = [];
   }

@@ -21,6 +21,7 @@ export type Repo = {
   hub?: string;        // grouping label (e.g., "Personal-Apps", "The Hub")
   pinned?: boolean;
   starred?: boolean;   // user-pinned via the threshold star toggle
+  archived?: boolean;  // hidden from the default threshold list until restored
   isAssistantHub?: boolean;
   // Mock/UI-only flags below — synthesized from chronicle data later.
   recent?: string;

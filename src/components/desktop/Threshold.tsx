@@ -28,6 +28,10 @@ type ThresholdProps = {
     initialMessage?: string;
   }) => void;
   onToggleStar?: (path: string) => void;
+  onToggleArchive?: (path: string) => void;
+  showArchived?: boolean;
+  onToggleShowArchived?: (v: boolean) => void;
+  archiveError?: string | null;
   assistantEngine?: AssistantEngine;
   onAssistantEngineChange?: (e: AssistantEngine) => void;
 };
@@ -37,13 +41,21 @@ export function Threshold({
   reposLoading,
   onSetForth,
   onToggleStar,
+  onToggleArchive,
+  showArchived = false,
+  onToggleShowArchived,
+  archiveError,
   assistantEngine = 'claude',
   onAssistantEngineChange,
 }: ThresholdProps) {
   const [companion, setCompanion] = useState<CompanionId>('claude');
   // The Assistant Hub from the live repo list, if discovered. Falls back to the constant.
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
-  const regularRepos = repos.filter((r) => !r.isAssistantHub);
+  // Filter archived repos locally too: between toggling the shelf closed and
+  // the refetch landing, the previous response would still render them.
+  const regularRepos = repos.filter(
+    (r) => !r.isAssistantHub && (showArchived || !r.archived),
+  );
   const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
   const [query, setQuery] = useState('');
   const defaultRepo = regularRepos[0];
@@ -66,6 +78,31 @@ export function Threshold({
 
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
   const selectedRepoPath = effectiveRepo?.path;
+
+  // Consult the CURRENT repo list, not the selectedRepo object captured at
+  // click time: its archived flag goes stale as soon as a toggle lands.
+  const currentRepo = (path: string | undefined) => repos.find((r) => r.path === path);
+
+  // Archiving the selected repo hides its row (when the archived shelf is
+  // closed). Drop the selection so the user cannot set forth into a repo
+  // they can no longer see. Restoring keeps the row visible, so the
+  // selection survives that direction.
+  const handleArchive = (path: string) => {
+    const cur = currentRepo(path);
+    if (selectedRepo?.path === path && cur && !cur.archived && !showArchived) {
+      setSelectedRepo(undefined);
+    }
+    onToggleArchive?.(path);
+  };
+
+  // Hiding the archived shelf can conceal the current selection the same way.
+  const handleToggleShowArchived = () => {
+    const next = !showArchived;
+    onToggleShowArchived?.(next);
+    if (!next && selectedRepo && currentRepo(selectedRepo.path)?.archived) {
+      setSelectedRepo(undefined);
+    }
+  };
 
   // Engine="claude" keeps the legacy 'assistant' cli alias (preserves existing
   // hub sessions and lets the server resolve cwd via its ASSISTANT_HUB_PATH
@@ -367,6 +404,7 @@ export function Threshold({
                           selected={r.path === selectedRepoPath}
                           onClick={() => setSelectedRepo(r)}
                           onToggleStar={onToggleStar}
+                          onToggleArchive={handleArchive}
                         />
                       ))}
                     </div>
@@ -391,6 +429,35 @@ export function Threshold({
                     />
                   ))}
                 </div>
+              )}
+              {archiveError && (
+                <div
+                  className="sw-folio"
+                  role="status"
+                  style={{ padding: '8px 4px', fontStyle: 'italic', color: 'var(--ember)' }}
+                >
+                  {archiveError}
+                </div>
+              )}
+              {!query && onToggleShowArchived && (
+                <button
+                  type="button"
+                  className="sw-folio"
+                  aria-pressed={showArchived}
+                  onClick={handleToggleShowArchived}
+                  style={{
+                    background: 'transparent',
+                    border: 0,
+                    padding: '8px 4px',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    fontStyle: 'italic',
+                    fontSize: 11.5,
+                    color: showArchived ? 'var(--ember)' : 'var(--ink-faint)',
+                  }}
+                >
+                  {showArchived ? 'hide the archived shelf' : 'show the archived shelf'}
+                </button>
               )}
             </>
           )}
@@ -616,22 +683,29 @@ function EnginePill({
 }
 
 const STARRED_HUB_LABEL = '★ starred';
+const ARCHIVED_HUB_LABEL = 'archived';
 
 // Bucket repos by hub, preserving the order in which hubs were first seen.
 // Starred repos are pulled into a single synthetic bucket at the top so the
 // pinned set clusters together regardless of which hub each repo lives in.
+// Archived repos (only present when the archived shelf is shown) sink into a
+// single bucket at the bottom.
 function groupByDisplayHub(repos: Repo[]): Array<{ hub: string; repos: Repo[] }> {
   const order: string[] = [];
   const buckets = new Map<string, Repo[]>();
   for (const r of repos) {
-    const key = r.starred ? STARRED_HUB_LABEL : (r.hub ?? '');
+    const key = r.archived ? ARCHIVED_HUB_LABEL : r.starred ? STARRED_HUB_LABEL : (r.hub ?? '');
     if (!buckets.has(key)) {
       order.push(key);
       buckets.set(key, []);
     }
     buckets.get(key)!.push(r);
   }
-  return order.map((hub) => ({ hub, repos: buckets.get(hub)! }));
+  const groups = order.map((hub) => ({ hub, repos: buckets.get(hub)! }));
+  groups.sort((a, b) =>
+    (a.hub === ARCHIVED_HUB_LABEL ? 1 : 0) - (b.hub === ARCHIVED_HUB_LABEL ? 1 : 0),
+  );
+  return groups;
 }
 
 function RepoPick({
@@ -639,14 +713,17 @@ function RepoPick({
   selected,
   onClick,
   onToggleStar,
+  onToggleArchive,
 }: {
   repo: Repo;
   selected: boolean;
   onClick: () => void;
   onToggleStar?: (path: string) => void;
+  onToggleArchive?: (path: string) => void;
 }) {
-  const { branch, pinned, italic, awaits, starred } = repo;
+  const { branch, pinned, italic, awaits, starred, archived } = repo;
   const canStar = !!onToggleStar && !italic;
+  const canArchive = !!onToggleArchive && !italic;
   return (
     <div
       onClick={onClick}
@@ -732,6 +809,35 @@ function RepoPick({
         >
           {branch}
         </span>
+      )}
+      {canArchive && (
+        <button
+          type="button"
+          aria-label={archived ? 'restore repo' : 'archive repo'}
+          aria-pressed={!!archived}
+          title={archived ? 'restore to the shelves' : 'archive (hide from the shelves)'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleArchive?.(repo.path);
+          }}
+          style={{
+            background: 'transparent',
+            border: 0,
+            padding: 0,
+            cursor: 'pointer',
+            color: archived ? 'var(--ember)' : 'var(--ink-faint)',
+            fontSize: 12,
+            lineHeight: 1,
+            flexShrink: 0,
+            minWidth: 24,
+            minHeight: 24,
+            fontFamily: 'var(--serif-display)',
+            fontStyle: 'italic',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {archived ? 'restore' : 'archive'}
+        </button>
       )}
     </div>
   );

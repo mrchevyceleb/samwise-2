@@ -10,6 +10,7 @@ import { readChronicle } from './chronicle.ts';
 import { readCommands } from './commands.ts';
 import { ensureStateDir, getPlanMode, setSessionId } from './sessions.ts';
 import { readStars, toggleStar } from './stars.ts';
+import { readArchived, toggleArchived } from './archive.ts';
 import {
   getOrCreateSession,
   freshStart,
@@ -66,9 +67,11 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 
-app.get('/api/repos', async (_req, res) => {
+app.get('/api/repos', async (req, res) => {
   try {
-    const repos = await discoverRepos();
+    const includeArchived =
+      req.query.includeArchived === '1' || req.query.includeArchived === 'true';
+    const repos = await discoverRepos({ includeArchived });
     res.json({ repos });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
@@ -93,6 +96,29 @@ app.post('/api/stars/toggle', async (req, res) => {
   try {
     const starred = await toggleStar(path);
     res.json({ path, starred });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.get('/api/archived', async (_req, res) => {
+  try {
+    const set = await readArchived();
+    res.json({ paths: Array.from(set).sort() });
+  } catch (e) {
+    res.status(500).json({ error: String((e as Error).message) });
+  }
+});
+
+app.post('/api/archived/toggle', async (req, res) => {
+  const path = typeof req.body?.path === 'string' ? req.body.path : '';
+  if (!path) {
+    res.status(400).json({ error: 'path required' });
+    return;
+  }
+  try {
+    const archived = await toggleArchived(path);
+    res.json({ path, archived });
   } catch (e) {
     res.status(500).json({ error: String((e as Error).message) });
   }

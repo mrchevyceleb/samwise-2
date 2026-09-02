@@ -10,6 +10,7 @@ import {
   IGNORED_HUB_NAMES,
 } from './config.ts';
 import { readStars } from './stars.ts';
+import { readArchived } from './archive.ts';
 
 const exec = promisify(execFile);
 
@@ -20,6 +21,7 @@ export type DiscoveredRepo = {
   hub: string; // "Work", "Side projects", "The Hub", etc.
   pinned?: boolean;
   starred?: boolean;
+  archived?: boolean;
   isAssistantHub?: boolean;
 };
 
@@ -56,7 +58,9 @@ async function scanParent(parent: string, hub: string): Promise<DiscoveredRepo[]
   return out;
 }
 
-export async function discoverRepos(): Promise<DiscoveredRepo[]> {
+export async function discoverRepos(
+  opts: { includeArchived?: boolean } = {},
+): Promise<DiscoveredRepo[]> {
   const all: DiscoveredRepo[] = [];
 
   // Always include the Assistant Hub first (special, pinned).
@@ -96,10 +100,20 @@ export async function discoverRepos(): Promise<DiscoveredRepo[]> {
     if (stars.has(r.path)) r.starred = true;
   }
 
+  // Apply archived flags and, by default, drop archived repos entirely so
+  // they stay out of the Threshold list and anything else consuming
+  // /api/repos. Callers that want the full set (the archived view) pass
+  // includeArchived.
+  const archived = await readArchived();
+  for (const r of all) {
+    if (archived.has(r.path)) r.archived = true;
+  }
+  const visible = opts.includeArchived ? all : all.filter((r) => !r.archived);
+
   // Stat for mtime to roughly sort by recent activity. Starred repos float to
   // the top regardless of mtime.
   const withMtime = await Promise.all(
-    all.map(async (r) => {
+    visible.map(async (r) => {
       try {
         const s = await stat(r.path);
         return { r, mtime: s.mtimeMs };

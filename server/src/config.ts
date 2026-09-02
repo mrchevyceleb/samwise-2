@@ -56,3 +56,5 @@ export const STATE_DIR = join(homedir(), '.samwise-2');
 export const SESSIONS_FILE = join(STATE_DIR, 'sessions.json');
 // Repos Matt has starred from the Threshold. Sorted to the top of /api/repos.
 export const STARS_FILE = join(STATE_DIR, 'stars.json');
+// Repos Matt has archived. Hidden from the default /api/repos response.
+export const ARCHIVED_FILE = join(STATE_DIR, 'archived.json');
