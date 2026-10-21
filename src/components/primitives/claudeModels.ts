@@ -14,25 +14,26 @@ const CLAUDE_EFFORTS: ClaudeEffort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 export const CLAUDE_MODEL_STORAGE_KEY = 'samwise-2:claude-model';
 export const CLAUDE_EFFORT_STORAGE_KEY = 'samwise-2:claude-effort';
-export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5';
+export const DEFAULT_CLAUDE_MODEL = 'claude-fable-5-1';
 
 // Model ids are the exact strings the `claude` CLI's --model flag accepts.
+// Verified against Claude Code 2.1.284 on 2026-10-21.
 export const CLAUDE_MODELS: ClaudeModelSpec[] = [
   {
-    id: 'claude-opus-5',
-    label: 'Claude Opus 5',
+    id: 'claude-fable-5-1',
+    label: 'Claude Fable 5.1',
     defaultEffort: 'max',
     efforts: CLAUDE_EFFORTS,
   },
   {
-    id: 'claude-opus-4-8',
-    label: 'Claude Opus 4.8',
+    id: 'claude-opus-5-5',
+    label: 'Claude Opus 5.5',
     defaultEffort: 'max',
     efforts: CLAUDE_EFFORTS,
   },
   {
-    id: 'claude-sonnet-5',
-    label: 'Claude Sonnet 5',
+    id: 'claude-sonnet-5-5',
+    label: 'Claude Sonnet 5.5',
     defaultEffort: 'high',
     efforts: CLAUDE_EFFORTS,
   },
@@ -59,7 +60,7 @@ export function readStoredClaudeModel(): string {
   const model = normalizeClaudeModel(raw);
   if (raw !== model) {
     // Model and effort form one persisted selection. A stale or missing model
-    // must reset the pair, rather than carrying an old effort onto Opus 5.
+    // must reset the pair, rather than carrying an old effort onto Fable 5.1.
     localStorage.setItem(CLAUDE_MODEL_STORAGE_KEY, model);
     localStorage.setItem(CLAUDE_EFFORT_STORAGE_KEY, claudeModelSpec(model).defaultEffort);
   }

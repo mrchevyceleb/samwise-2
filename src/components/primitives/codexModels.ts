@@ -10,32 +10,40 @@ export type CodexModelSpec = {
 
 const STANDARD_EFFORTS: CodexEffort[] = ['low', 'medium', 'high', 'xhigh'];
 const MAX_EFFORTS: CodexEffort[] = [...STANDARD_EFFORTS, 'max'];
+const ULTRA_EFFORTS: CodexEffort[] = [...MAX_EFFORTS, 'ultra'];
 
 export const CODEX_MODEL_STORAGE_KEY = 'samwise-2:codex-model';
 export const CODEX_EFFORT_STORAGE_KEY = 'samwise-2:codex-effort';
-export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+export const DEFAULT_CODEX_MODEL = 'gpt-6.1-sol';
 
-// Synced with Codex CLI 0.144.0's model catalog on 2026-07-09.
+// Synced with Codex CLI 0.159.3's model catalog on 2026-10-21.
 export const CODEX_MODELS: CodexModelSpec[] = [
   {
-    id: 'gpt-5.6-sol',
-    label: 'GPT-5.6 Sol',
+    id: 'gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
     defaultEffort: 'low',
-    efforts: [...MAX_EFFORTS, 'ultra'],
-    contextWindow: 372_000,
+    efforts: ULTRA_EFFORTS,
+    contextWindow: 500_000,
   },
   {
-    id: 'gpt-5.6-luna',
-    label: 'GPT-5.6 Luna',
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    defaultEffort: 'medium',
+    efforts: ULTRA_EFFORTS,
+    contextWindow: 272_000,
+  },
+  {
+    id: 'gpt-6-sol',
+    label: 'GPT-6 Sol',
+    defaultEffort: 'medium',
+    efforts: ULTRA_EFFORTS,
+    contextWindow: 272_000,
+  },
+  {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
     defaultEffort: 'medium',
     efforts: MAX_EFFORTS,
-    contextWindow: 372_000,
-  },
-  {
-    id: 'gpt-5.5',
-    label: 'GPT-5.5',
-    defaultEffort: 'medium',
-    efforts: STANDARD_EFFORTS,
     contextWindow: 272_000,
   },
 ];
@@ -65,7 +73,7 @@ export function readStoredCodexModel(): string {
   const model = normalizeCodexModel(raw);
   if (raw !== model) {
     // Model and effort form one persisted selection. A stale or missing model
-    // must reset the pair, rather than carrying an old effort onto Sol.
+    // must reset the pair, rather than carrying an old effort onto 6.1 Sol.
     localStorage.setItem(CODEX_MODEL_STORAGE_KEY, model);
     localStorage.setItem(CODEX_EFFORT_STORAGE_KEY, codexModelSpec(model).defaultEffort);
   }

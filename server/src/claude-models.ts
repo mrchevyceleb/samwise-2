@@ -5,12 +5,12 @@ export type ClaudeModelCapability = {
 
 const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 const CLAUDE_MODEL_CAPABILITIES: Record<string, ClaudeModelCapability> = {
-  'claude-opus-5': { defaultEffort: 'max', efforts: new Set(CLAUDE_EFFORTS) },
-  'claude-opus-4-8': { defaultEffort: 'max', efforts: new Set(CLAUDE_EFFORTS) },
-  'claude-sonnet-5': { defaultEffort: 'high', efforts: new Set(CLAUDE_EFFORTS) },
+  'claude-fable-5-1': { defaultEffort: 'max', efforts: new Set(CLAUDE_EFFORTS) },
+  'claude-opus-5-5': { defaultEffort: 'max', efforts: new Set(CLAUDE_EFFORTS) },
+  'claude-sonnet-5-5': { defaultEffort: 'high', efforts: new Set(CLAUDE_EFFORTS) },
 };
 
-export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5';
+export const DEFAULT_CLAUDE_MODEL = 'claude-fable-5-1';
 
 function claudeCapability(model: string): ClaudeModelCapability | undefined {
   return Object.prototype.hasOwnProperty.call(CLAUDE_MODEL_CAPABILITIES, model)
