@@ -659,6 +659,10 @@ export function useChat(opts: {
           // jump straight to 'streaming' so the UI shows tending instead of
           // looking idle while events stream in via replay.
           setStatus(msg.busy ? 'streaming' : 'ready');
+          if (!msg.busy && compactingRef.current) {
+            compactingRef.current = false;
+            setCompacting(false);
+          }
           if (typeof msg.planMode === 'boolean') setPlanModeState(msg.planMode);
           if (typeof msg.model === 'string') {
             const sessionEffort = typeof msg.effort === 'string' ? msg.effort : undefined;
@@ -744,6 +748,10 @@ export function useChat(opts: {
             onInitialMessageSentRef.current?.();
           }
           pendingSendRef.current = false;
+        // A compact asked for on this socket died with it (the server may
+        // never have read the frame). Let the pill work again.
+        compactingRef.current = false;
+        setCompacting(false);
           pendingActionRef.current = false;
           setError(null);
           setStatus('streaming');
@@ -862,6 +870,11 @@ export function useChat(opts: {
           }
         }
         else if (msg.type === 'error') {
+          // A rejected compact (busy, no session, wrong engine) answers with
+          // an error and no turnEnd. Clear the latch so the pill can be used
+          // again and the watchdog returns to its normal window.
+          compactingRef.current = false;
+          setCompacting(false);
           const inFlight =
             statusRef.current === 'streaming' ||
             statusRef.current === 'connecting' ||
@@ -1001,6 +1014,9 @@ export function useChat(opts: {
    *  (the CLI supports "/compact keep the API notes"). */
   const compact = (instructions?: string) => {
     if (!repo) return;
+    // Only the Claude runner has an in-session /compact. Codex and Banana
+    // reaches here only through a stale prop; refuse rather than round-trip.
+    if (cli !== 'claude' && cli !== 'assistant') return;
     const ws = wsRef.current;
     // A second click while the first is still in flight would come back as
     // "Sam is mid-turn", which reads as an error the user didn't cause.

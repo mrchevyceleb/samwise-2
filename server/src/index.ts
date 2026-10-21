@@ -803,7 +803,12 @@ wss.on('connection', (ws, req) => {
             const rebound = await bindSession(getOrCreateSession({
               cli: cliKind, repoPath, chatId, model: msg.model, effort: msg.effort,
             }));
-            if (!rebound) return;
+            if (!rebound) {
+              // A newer bind superseded us and owns the socket now. Say so:
+              // a silent return leaves the client's compact latch closed.
+              safeSend({ type: 'error', message: 'the conversation changed hands. Compact again.' });
+              return;
+            }
             session = rebound;
           }
         }

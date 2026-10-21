@@ -596,7 +596,7 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
-            onCompact={chat.compact}
+            onCompact={companion === 'claude' || companion === 'assistant' ? chat.compact : undefined}
             compactBusy={chat.compacting}
           />
         )}
@@ -690,7 +690,7 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
-            onCompact={chat.compact}
+            onCompact={companion === 'claude' || companion === 'assistant' ? chat.compact : undefined}
             compactBusy={chat.compacting}
           />
         )}

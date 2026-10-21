@@ -405,7 +405,11 @@ class ClaudeSession {
     try {
       this.child.stdin.write(payload + '\n');
     } catch (e) {
+      // The turn was already announced; without a turnEnd the server stays
+      // busy and the client stays streaming.
+      this.turnStartedAt = null;
       this.emit({ type: 'error', message: `compact write failed: ${(e as Error).message}` });
+      this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
     }
   }
 
