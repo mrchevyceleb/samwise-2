@@ -37,14 +37,29 @@ function windowForClaudeModel(model: string | undefined): number {
 let nextId = 1;
 const id = () => `b${nextId++}`;
 
+/** 20902 -> "20.9k"; small counts pass through. */
+function shortTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
+}
+
 // Pure reducer — all per-turn state lives on the blocks themselves
 // (turnId + cbIndex). This keeps it safe under React Strict Mode, which
 // invokes reducers twice for purity-checking.
-function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): ChatBlock[] {
+function reduce(
+  blocks: ChatBlock[],
+  ev: any,
+  turnIdRef: { current: string },
+  /** Event time from the server envelope. Replayed history keeps the moment
+   *  each event was emitted instead of restamping it at page load. */
+  eventTs?: number,
+): ChatBlock[] {
+  // Legacy events predate the server ts; leave them unstamped rather than
+  // restamp all history at page load (which reads as "replied just now").
+  const t = typeof eventTs === 'number' ? eventTs : undefined;
   if (!ev || typeof ev !== 'object') return blocks;
 
   if (ev.type === 'stream_event' && ev.event) {
-    return reduce(blocks, ev.event, turnIdRef);
+    return reduce(blocks, ev.event, turnIdRef, eventTs);
   }
 
   // Server-injected echo of the user's prompt — keeps the user's message in
@@ -58,6 +73,50 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
     }
     const ts = typeof ev.ts === 'number' ? ev.ts : Date.now();
     return [...blocks, { kind: 'user', id: id(), text: ev.text, ts }];
+  }
+
+  // Manual compact: a quiet rule lands the moment it starts, then the CLI's
+  // compact_boundary turns it into a finished line with its real token counts.
+  if (ev.type === '_compact') {
+    return [...blocks, {
+      kind: 'divider',
+      id: id(),
+      label: 'compacting the conversation…',
+      ts: t,
+      turnId: turnIdRef.current,
+    }];
+  }
+  if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
+    const meta = ev.compact_metadata ?? {};
+    const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : undefined;
+    const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined;
+    const label = pre !== undefined && post !== undefined
+      ? `compacted its memory · ${shortTokens(pre)} → ${shortTokens(post)} tokens`
+      : post !== undefined
+        ? `compacted its memory · now ${shortTokens(post)} tokens`
+        : 'compacted its memory';
+    // Only the compact of THIS turn may be relabelled: an auto-compact can
+    // land while an older, failed marker is still pending further up.
+    const idx = blocks.reduce(
+      (acc, b, i) => (b.kind === 'divider' && !b.done && b.turnId === turnIdRef.current ? i : acc),
+      -1,
+    );
+    if (idx >= 0) {
+      const copy = blocks.slice();
+      const target = copy[idx];
+      if (target.kind === 'divider') copy[idx] = { ...target, label, done: true };
+      return copy;
+    }
+    return [...blocks, { kind: 'divider', id: id(), label, ts: t, done: true }];
+  }
+
+  // Turn finished. A compact that did not produce a boundary before its
+  // result failed (nothing to summarize, CLI error); say so instead of
+  // leaving a "compacting…" line pending forever.
+  if (ev.type === 'result') {
+    return blocks.map((b) =>
+      b.kind === 'divider' && !b.done ? { ...b, label: 'compaction did not finish', done: true } : b,
+    );
   }
 
   if (ev.type === 'message_start') {
@@ -75,7 +134,7 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
     const turnId = turnIdRef.current;
     if (cb?.type === 'text') {
       const block: ChatBlock = {
-        kind: 'text', id: id(), text: '', ts: Date.now(),
+        kind: 'text', id: id(), text: '', ts: t,
         turnId, cbIndex: idx, open: true,
       };
       return [...blocks, block];
@@ -84,7 +143,7 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
       const block: ChatBlock = {
         kind: 'tool', id: id(),
         toolUseId: cb.id, tool: cb.name, args: '',
-        running: true, ts: Date.now(),
+        running: true, ts: t,
         turnId, cbIndex: idx, open: true,
       };
       return [...blocks, block];
@@ -292,8 +351,15 @@ export function useChat(opts: {
   model?: string;
   /** Codex reasoning effort. Ignored by Claude and Banana. */
   effort?: string;
+  /** The model + effort a live Claude/assistant session was spawned with.
+   *  Lets the picker follow the session across devices instead of showing
+   *  this browser's stored choice. */
+  onSessionSelection?: (
+    model: string,
+    effort?: string,
+  ) => { model: string; effort: string } | null;
 }) {
-  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model, effort } = opts;
+  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model, effort, onSessionSelection } = opts;
   // Mirror the selection before paint so a send/steer event can never observe
   // the prior render's pair after the picker already shows the new values.
   const selectionRef = useRef<{ model?: string; effort?: string }>({ model, effort });
@@ -303,7 +369,12 @@ export function useChat(opts: {
   const modelField = useCallback((): { model?: string; effort?: string } => {
     const selection = selectionRef.current;
     if (cli === 'banana' && selection.model) return { model: selection.model };
-    if ((cli === 'codex' || cli === 'claude') && selection.model && selection.effort) {
+    // `assistant` is the hub lane running the Claude CLI, so it takes the
+    // Claude model/effort pair exactly like `claude` does.
+    if (
+      (cli === 'codex' || cli === 'claude' || cli === 'assistant')
+      && selection.model && selection.effort
+    ) {
       return { model: selection.model, effort: selection.effort };
     }
     return {};
@@ -330,6 +401,14 @@ export function useChat(opts: {
   const pendingActionRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(null);
+  // True from the moment a compact is asked for until its turn ends. Keeps
+  // a second click quiet and lets the watchdog tolerate the CLI's long
+  // silence while it writes the summary.
+  const [compacting, setCompacting] = useState(false);
+  const compactingRef = useRef(false);
+  /** Set once the server answered a compact with turnStart. Until then an
+   *  error can mean the compact never started, so the latch may open. */
+  const compactConfirmedRef = useRef(false);
   const windowTokensRef = useRef(defaultWindowForCli(cli, model));
   /** Server-confirmed plan-mode flag. Updated on `ready` and `planModeChanged`.
    *  `null` means the server hasn't told us yet. */
@@ -353,8 +432,28 @@ export function useChat(opts: {
   /** The value the in-flight flags belong to. A NEW prompt clears them; a
    *  re-render of the same prompt must not. */
   const initialSeenRef = useRef<string | null>(initialMessage ?? null);
+  /** Delivery ledger for the threshold prompt: which exact (conversation,
+   *  text) pair has already been handed to the socket, and whether the server
+   *  ever confirmed it with a turnStart. `initialSendInFlightRef` alone is not
+   *  enough: turnStart and socket closes clear it by design, which reopens the
+   *  window for the other send path mid-turn. This entry is NOT cleared by any
+   *  server event — only by a genuinely new prompt, a conversation switch, or
+   *  a socket that dies before the server confirmed the turn (so a reconnect
+   *  can still retry a prompt that never landed). */
+  const initialDeliveredRef = useRef<{
+    key: string;
+    ws: WebSocket | null;
+    confirmed: boolean;
+  } | null>(null);
+  /** True once THIS connection has seen the server's `ready`. The pending
+   *  threshold prompt must not go out before that: `ready` is what reports
+   *  the session's real model/effort, and sending first would recycle the
+   *  live session back to this browser's stale stored default. */
+  const readySeenRef = useRef(false);
   const onInitialMessageSentRef = useRef(onInitialMessageSent);
   onInitialMessageSentRef.current = onInitialMessageSent;
+  const onSessionSelectionRef = useRef(onSessionSelection);
+  onSessionSelectionRef.current = onSessionSelection;
   /** Latest event seq received from server. Sent on reconnect for replay. */
   const lastSeqRef = useRef(-1);
   /** Wall-clock ms of the most recent WS message. Drives the streaming
@@ -377,6 +476,7 @@ export function useChat(opts: {
         initialSeenRef.current = initialMessage;
         initialSentForRef.current = null;
         initialSendInFlightRef.current = false;
+        initialDeliveredRef.current = null;
       }
       initialMessageRef.current = initialMessage;
       if (initialSentForRef.current === initialMessage) return;
@@ -386,11 +486,25 @@ export function useChat(opts: {
         ws &&
         ws.readyState === WebSocket.OPEN &&
         !initialSendInFlightRef.current &&
+        readySeenRef.current &&
         (status === 'ready' || status === 'idle')
       ) {
         const expectedKey = conversationKey(cli, repo.path, chatId);
+        const deliveryKey = `${expectedKey}\u0000${initialMessage}`;
+        const delivered = initialDeliveredRef.current;
+        if (
+          delivered &&
+          delivered.key === deliveryKey &&
+          (delivered.confirmed || delivered.ws === ws)
+        ) {
+          // This prompt already went out on this conversation. A confirmation
+          // or a still-open socket means the server has it; sending again
+          // would double the turn.
+          return;
+        }
         initialSendInFlightRef.current = true;
         initialSentForRef.current = initialMessage;
+        initialDeliveredRef.current = { key: deliveryKey, ws, confirmed: false };
         setChat((prev) => {
           if (prev.key !== expectedKey) return prev;
           const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
@@ -410,6 +524,7 @@ export function useChat(opts: {
       initialMessageRef.current = null;
       initialSentForRef.current = null;
       initialSeenRef.current = null;
+      initialDeliveredRef.current = null;
     }
   }, [chatId, cli, initialMessage, modelField, repo, status]);
 
@@ -437,6 +552,7 @@ export function useChat(opts: {
     if (!enabled || !repo) return;
 
     teardownRef.current = false;
+    readySeenRef.current = false;
     const connectionId = ++connectionIdRef.current;
     const isCurrentConnection = () => connectionIdRef.current === connectionId && !teardownRef.current;
     // Conversation identity for this effect's lifetime. setChat updates that
@@ -548,15 +664,52 @@ export function useChat(opts: {
           // jump straight to 'streaming' so the UI shows tending instead of
           // looking idle while events stream in via replay.
           setStatus(msg.busy ? 'streaming' : 'ready');
+          if (!msg.busy && compactingRef.current) {
+            compactingRef.current = false;
+            compactConfirmedRef.current = false;
+            setCompacting(false);
+          }
           if (typeof msg.planMode === 'boolean') setPlanModeState(msg.planMode);
+          if (typeof msg.model === 'string') {
+            const sessionEffort = typeof msg.effort === 'string' ? msg.effort : undefined;
+            const adopted = onSessionSelectionRef.current?.(msg.model, sessionEffort);
+            // Adopted means this browser had no pick of its own, so the
+            // pending first message below must use the session's (normalized)
+            // model. The ref update is synchronous on purpose: it has to land
+            // before that send reads modelField().
+            if (adopted) {
+              selectionRef.current = { model: adopted.model, effort: adopted.effort };
+            }
+          }
+          readySeenRef.current = true;
           // Send a pending first message (typed straight into the threshold)
           // the moment the server says ready. Keep it pending until turnStart
           // confirms the server accepted it, so startup reconnects do not lose
           // threshold-entered prompts.
           const pending = initialMessageRef.current;
           if (pending && !initialSendInFlightRef.current && !initialSentForRef.current && ws.readyState === WebSocket.OPEN) {
+            const deliveryKey = `${expectedKey}\u0000${pending}`;
+            const delivered = initialDeliveredRef.current;
+            if (
+              delivered &&
+              delivered.key === deliveryKey &&
+              (delivered.confirmed || delivered.ws === ws)
+            ) {
+              // Already sent for this conversation. Sending again here is the
+              // duplicate-turn bug: turnStart clears the in-flight flag, so a
+              // late ready must not be allowed to replay the same prompt.
+              return;
+            }
+            if (msg.busy) {
+              // A turn is already running (usually ours: the socket died
+              // after delivery but before turnStart). Pushing the text again
+              // would queue or steer a second copy, so treat it as landed.
+              if (delivered && delivered.key === deliveryKey) delivered.confirmed = true;
+              return;
+            }
             initialSendInFlightRef.current = true;
             initialSentForRef.current = pending;
+            initialDeliveredRef.current = { key: deliveryKey, ws, confirmed: false };
             setChat((prev) => {
               if (prev.key !== expectedKey) return prev;
               const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
@@ -586,6 +739,14 @@ export function useChat(opts: {
           setError(null);
         }
         else if (msg.type === 'turnStart') {
+          // The server has the threshold prompt. Keep the delivery ledger's
+          // entry in place (only confirmed now) so a later ready or effect run
+          // can never replay it; the in-flight flags below are just UI state.
+          // Only a turnStart that answers a send this socket is waiting on
+          // counts as confirmation.
+          if (initialSendInFlightRef.current && initialDeliveredRef.current) {
+            initialDeliveredRef.current.confirmed = true;
+          }
           if (initialSendInFlightRef.current) {
             initialSendInFlightRef.current = false;
             initialMessageRef.current = null;
@@ -594,12 +755,17 @@ export function useChat(opts: {
           }
           pendingSendRef.current = false;
           pendingActionRef.current = false;
+          // A compact sent on this socket is now owned by the server.
+          if (compactingRef.current) compactConfirmedRef.current = true;
           setError(null);
           setStatus('streaming');
         }
         else if (msg.type === 'turnEnd') {
           pendingSendRef.current = false;
           pendingActionRef.current = false;
+          compactingRef.current = false;
+          compactConfirmedRef.current = false;
+          setCompacting(false);
           setStatus('ready');
         }
         else if (msg.type === 'freshStarted') {
@@ -629,8 +795,23 @@ export function useChat(opts: {
           setChat((prev) =>
             prev.key !== expectedKey
               ? prev
-              : { key: prev.key, blocks: reduce(prev.blocks, msg.event, turnIdRef) },
+              : {
+              key: prev.key,
+              blocks: reduce(prev.blocks, msg.event, turnIdRef, msg.ts),
+            },
           );
+          // A compact replayed from the event log (reconnect, second tab) must
+          // re-arm the latch and the generous watchdog too, not just the tab
+          // that clicked it. The matching result is what releases both.
+          if (msg.event?.type === '_compact') {
+            compactingRef.current = true;
+            compactConfirmedRef.current = true;
+            setCompacting(true);
+          } else if (msg.event?.type === 'result' && compactingRef.current) {
+            compactingRef.current = false;
+            compactConfirmedRef.current = false;
+            setCompacting(false);
+          }
           // Codex and Banana are spawn-per-turn runners whose Node-side
           // runner normalizes usage onto a synthetic `result` event. Claude
           // (and the Assistant) emit per-call usage on `assistant.message`.
@@ -660,6 +841,26 @@ export function useChat(opts: {
                 ? (msg.event.usage as Record<string, number | undefined>)
                 : null;
 
+          // Compaction just rewrote the context: show the meter where it
+          // actually stands instead of waiting for the next model call.
+          if (
+            !spawnPerTurn &&
+            msg.event?.type === 'system' &&
+            msg.event?.subtype === 'compact_boundary' &&
+            typeof msg.event?.compact_metadata?.post_tokens === 'number'
+          ) {
+            const post = msg.event.compact_metadata.post_tokens as number;
+            const windowTokens = windowTokensRef.current;
+            setUsage({
+              inputTokens: post,
+              cacheReadTokens: 0,
+              cacheCreateTokens: 0,
+              outputTokens: 0,
+              fraction: Math.min(post / windowTokens, 1),
+              windowTokens,
+            });
+          }
+
           if (usagePayload) {
             const u = usagePayload;
             const input = u.input_tokens ?? 0;
@@ -686,6 +887,14 @@ export function useChat(opts: {
           }
         }
         else if (msg.type === 'error') {
+          // A rejected compact (busy, no session, wrong engine) answers with
+          // an error and no turnStart. Clear the latch then, but never in the
+          // middle of a confirmed compaction: the runner can forward an error
+          // while its turn keeps going.
+          if (!compactConfirmedRef.current) {
+            compactingRef.current = false;
+            setCompacting(false);
+          }
           const inFlight =
             statusRef.current === 'streaming' ||
             statusRef.current === 'connecting' ||
@@ -703,7 +912,21 @@ export function useChat(opts: {
       ws.onclose = () => {
         if (!isCurrentConnection()) return;
         if (initialSendInFlightRef.current) initialSendInFlightRef.current = false;
+        // A prompt that went out on this socket but never got a turnStart may
+        // have died with it — release the ledger AND the per-message claim so
+        // the reconnect retries it. A confirmed prompt stays claimed; it must
+        // never be sent twice.
+        const delivered = initialDeliveredRef.current;
+        if (delivered && delivered.ws === ws && !delivered.confirmed) {
+          initialDeliveredRef.current = null;
+          initialSentForRef.current = null;
+        }
         pendingSendRef.current = false;
+        // A compact asked for on this socket died with it (the server may
+        // never have read the frame). Let the pill work again.
+        compactingRef.current = false;
+        compactConfirmedRef.current = false;
+        setCompacting(false);
         setStatus('closed');
         const attempt = Math.min(reconnectAttemptRef.current, 3);
         const delay = Math.min(1000 * 2 ** attempt, 8000);
@@ -760,13 +983,18 @@ export function useChat(opts: {
     // takes an open-socket fast path that resends `hello`, but a stale-OPEN
     // socket buffers send() into a dead TCP path and the hello never lands.
     const STREAM_SILENCE_MS = 45_000;
+    // Compaction is one long silent model call; it can legitimately go
+    // minutes without a single event. Killing the socket mid-summary would
+    // look like a failure and lose the compact.
+    const COMPACT_SILENCE_MS = 6 * 60_000;
     const WATCHDOG_TICK_MS = 5_000;
     const watchdog = window.setInterval(() => {
       if (!isCurrentConnection()) return;
       if (statusRef.current !== 'streaming') return;
-      if (Date.now() - lastMessageAtRef.current < STREAM_SILENCE_MS) return;
+      const silenceLimit = compactingRef.current ? COMPACT_SILENCE_MS : STREAM_SILENCE_MS;
+      if (Date.now() - lastMessageAtRef.current < silenceLimit) return;
       // eslint-disable-next-line no-console
-      console.warn(`[useChat] stream watchdog: silent ${STREAM_SILENCE_MS}ms, forcing reconnect`);
+      console.warn(`[useChat] stream watchdog: silent too long, forcing reconnect`);
       lastMessageAtRef.current = Date.now();
       forceReconnectRef.current();
     }, WATCHDOG_TICK_MS);
@@ -805,11 +1033,58 @@ export function useChat(opts: {
     };
   }, [enabled, repo?.path, cli, chatId, modelField]);
 
+  /** Ask the server to run the CLI's own /compact on the warm session. The
+   *  conversation continues on the same session id under a summary; nothing
+   *  is lost from the visible thread. `instructions` focuses the summary
+   *  (the CLI supports "/compact keep the API notes"). */
+  const compact = (instructions?: string) => {
+    if (!repo) return;
+    // Claude compacts in-session, Codex through its app server. Banana has no
+    // equivalent; it only reaches here through a stale prop, so refuse.
+    if (cli !== 'claude' && cli !== 'assistant' && cli !== 'codex') return;
+    const ws = wsRef.current;
+    // A second click while the first is still in flight would come back as
+    // "Sam is mid-turn", which reads as an error the user didn't cause.
+    if (compactingRef.current) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line. Please wait a moment.');
+      return;
+    }
+    compactingRef.current = true;
+    compactConfirmedRef.current = false;
+    setCompacting(true);
+    pendingActionRef.current = true;
+    setError(null);
+    ws.send(JSON.stringify({
+      type: 'compact',
+      cli,
+      repo: repo.path,
+      chatId,
+      ...modelField(),
+      ...(instructions ? { instructions } : {}),
+    }));
+  };
+
   const send = (
     text: string,
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
     if (!repo) return;
+    if (cli === 'claude' || cli === 'assistant' || cli === 'codex') {
+      const m = text.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
+      if (m) {
+        // Images are irrelevant to a summary; the command path never sends
+        // them, so nothing is silently promised to the model.
+        compact(m[1].trim() || undefined);
+        return;
+      }
+    }
+    // The server rejects a send during the compact's setup window; say so
+    // here first so the words are not silently swallowed.
+    if (compactingRef.current) {
+      setError('Sam is compacting. One moment, then send.');
+      return;
+    }
     const ws = wsRef.current;
     const expectedKey = conversationKey(cli, repo.path, chatId);
     setChat((prev) => {
@@ -856,6 +1131,17 @@ export function useChat(opts: {
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
     if (!repo) return;
+    if (cli === 'claude' || cli === 'assistant' || cli === 'codex') {
+      const m = text.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
+      if (m) {
+        compact(m[1].trim() || undefined);
+        return;
+      }
+    }
+    if (compactingRef.current) {
+      setError('Sam is compacting. One moment, then send.');
+      return;
+    }
     const ws = wsRef.current;
     const expectedKey = conversationKey(cli, repo.path, chatId);
     setChat((prev) => {
@@ -927,6 +1213,6 @@ export function useChat(opts: {
 
   return {
     blocks, status, error, send, steer, freshStart, stop, reconnect, usage: displayedUsage,
-    planMode, setPlanMode, respondToTool,
+    planMode, setPlanMode, respondToTool, compact, compacting,
   };
 }

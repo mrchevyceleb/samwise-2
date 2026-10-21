@@ -1,8 +1,13 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { SamPortrait } from './atoms';
+import { CompactPill } from './PickerPill';
 import type { CommandEntry } from '../../data/types';
-import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
+import {
+  commandText,
+  getCommandHints,
+  getCommandSuggestion,
+} from '../../utils/commandAutocomplete';
 
 // ─────────────────────────────────────────────
 // Sam's message bubble — vellum, left-aligned, with avatar
@@ -750,6 +755,9 @@ export function ChatInput({
   placeholder = 'Speak, master.',
   agent = 'Claude Code',
   repo = '',
+  picker,
+  onCompact,
+  compactBusy = false,
   acceptImages = true,
 }: {
   value?: string;
@@ -765,6 +773,14 @@ export function ChatInput({
   placeholder?: string;
   agent?: string;
   repo?: string;
+  /** Model / effort picker slot. Lives in the composer header so it stays on
+   *  screen however far the thread scrolls. */
+  picker?: ReactNode;
+  /** Manual compact (Claude lanes only). Omitted hides the affordance.
+   *  Receives the optional focus text from "/compact keep the API notes". */
+  onCompact?: (instructions?: string) => void;
+  /** A compact is already in flight; the pill stays disabled until it ends. */
+  compactBusy?: boolean;
   acceptImages?: boolean;
 }) {
   const [internal, setInternal] = useState(value ?? '');
@@ -774,6 +790,7 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [images, setImages] = useState<ChatImage[]>([]);
   const suggestion = getCommandSuggestion(v, commandPrefix, commands);
+  const commandHints = getCommandHints(v, commandPrefix, commands, !!onCompact);
 
   // Auto-grow with content. Reset to auto so scrollHeight reflects natural
   // content size, then size to that, capped by computed max-height. Toggle
@@ -797,6 +814,22 @@ export function ChatInput({
 
   const submit = () => {
     if (!v.trim() && images.length === 0) return;
+    // A typed /compact is housekeeping, not a message. Handled before the
+    // busy branch so it can never be steered into a running turn.
+    if (onCompact) {
+      const m = v.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
+      if (m) {
+        onCompact(m[1].trim() || undefined);
+        setV('');
+        // The words became a command, so the attachments must not linger and
+        // ride along on the next message.
+        setImages((prev) => {
+          for (const img of prev) URL.revokeObjectURL(img.previewUrl);
+          return [];
+        });
+        return;
+      }
+    }
     const imgs = images.length
       ? images.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
       : undefined;
@@ -874,6 +907,8 @@ export function ChatInput({
           display: 'flex',
           alignItems: 'center',
           gap: 10,
+          rowGap: 6,
+          flexWrap: 'wrap',
           marginBottom: 10,
           paddingBottom: 8,
           borderBottom: '1px dashed var(--rule-soft)',
@@ -910,6 +945,16 @@ export function ChatInput({
               {repo}
             </span>
           </>
+        )}
+        {picker && (
+          <span style={{ display: 'inline-flex', flexShrink: 0, marginLeft: 2 }}>
+            {picker}
+          </span>
+        )}
+        {onCompact && (
+          <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+            <CompactPill onClick={() => onCompact()} disabled={busy || compactBusy} />
+          </span>
         )}
         <span
           style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}
@@ -987,7 +1032,32 @@ export function ChatInput({
         </div>
       )}
       <div style={{ position: 'relative' }}>
-        {suggestion && (
+        {commandHints.length > 0 && (
+          <div className="sw-cmdhints" aria-label="commands">
+            {commandHints.map((cmd) => (
+              <button
+                key={cmd.name}
+                type="button"
+                className="sw-cmdhint"
+                onMouseDown={(e) => {
+                  // Keep focus in the composer; the click only fills the name.
+                  e.preventDefault();
+                  setV(commandText(commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix, cmd.name));
+                  requestAnimationFrame(() => {
+                    taRef.current?.focus();
+                    taRef.current?.setSelectionRange(taRef.current.value.length, taRef.current.value.length);
+                  });
+                }}
+              >
+                <span className="sw-cmdhint-name">
+                  {commandText(commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix, cmd.name)}
+                </span>
+                {cmd.description && <span className="sw-cmdhint-desc">{cmd.description}</span>}
+              </button>
+            ))}
+          </div>
+        )}
+        {suggestion && commandHints.length === 0 && (
           <div
             aria-hidden
             style={{

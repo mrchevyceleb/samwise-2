@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type TouchEvent, type WheelEvent } from 'react';
-import { SamPortrait, Dinkus, Chip, SearchGlyph } from '../primitives/atoms';
+import { SamPortrait, Dinkus, Chip, SearchGlyph, ChatDivider } from '../primitives/atoms';
+import { CompactPill } from '../primitives/PickerPill';
 import {
   SamMessage,
   UserMessage,
@@ -11,9 +12,10 @@ import { BananaModelPicker } from '../primitives/BananaModelPicker';
 import { CodexModelPicker } from '../primitives/CodexModelPicker';
 import { ClaudeModelPicker } from '../primitives/ClaudeModelPicker';
 import { isInteractiveTool } from '../../hooks/useChat';
-import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
+import { commandText, getCommandHints, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
-function timeLabel(ts: number): string {
+function timeLabel(ts?: number): string | undefined {
+  if (typeof ts !== 'number') return undefined;
   const d = new Date(ts);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
@@ -24,15 +26,18 @@ function MobileGrowingInput({
   onSubmit,
   commandPrefix,
   commands,
+  showCompact = false,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
   commandPrefix: string;
   commands: CommandEntry[];
+  showCompact?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const suggestion = getCommandSuggestion(value, commandPrefix, commands);
+  const hints = getCommandHints(value, commandPrefix, commands, showCompact);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -55,7 +60,35 @@ function MobileGrowingInput({
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ position: 'relative' }}>
-        {suggestion && (
+        {hints.length > 0 && (
+          <div className="sw-cmdhints" aria-label="commands">
+            {hints.map((cmd) => {
+              const shown = commandText(
+                commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix,
+                cmd.name,
+              );
+              return (
+                <button
+                  key={cmd.name}
+                  type="button"
+                  className="sw-cmdhint"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onChange(shown);
+                    requestAnimationFrame(() => {
+                      ref.current?.focus();
+                      ref.current?.setSelectionRange(shown.length, shown.length);
+                    });
+                  }}
+                >
+                  <span className="sw-cmdhint-name">{shown}</span>
+                  {cmd.description && <span className="sw-cmdhint-desc">{cmd.description}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {suggestion && hints.length === 0 && (
           <div
             aria-hidden
             style={{
@@ -113,7 +146,7 @@ function MobileGrowingInput({
           }}
         />
       </div>
-      {suggestion && (
+      {suggestion && hints.length === 0 && (
         <button
           onClick={acceptSuggestion}
           style={{
@@ -140,6 +173,7 @@ import {
   STATS,
   CHRONICLE,
   ASSISTANT_HUB,
+  dayPart,
   type CompanionId,
   type Repo,
   type Hub,
@@ -167,6 +201,9 @@ const MOBILE_ASSISTANT_ENGINES: { id: MobileAssistantEngine; label: string }[] =
 export function MobileThreshold({
   repos,
   reposLoading,
+  settingForth = false,
+  reposError = false,
+  onRetryRepos,
   onSetForth,
   onToggleStar,
   liveSessions = [],
@@ -176,9 +213,17 @@ export function MobileThreshold({
   onToggleTheme,
   assistantEngine = 'claude',
   onAssistantEngineChange,
+  initialCompanion,
+  initialRepo,
+  initialQuery,
 }: {
   repos: Repo[];
   reposLoading?: boolean;
+  /** A set-forth is held until the repo list resolves the live hub. */
+  settingForth?: boolean;
+  /** The repo list itself failed; offer a retry instead of a dead hold. */
+  reposError?: boolean;
+  onRetryRepos?: () => void;
   onSetForth: (params: {
     companion: CompanionId;
     repo?: Repo;
@@ -192,12 +237,24 @@ export function MobileThreshold({
   onToggleTheme?: () => void;
   assistantEngine?: MobileAssistantEngine;
   onAssistantEngineChange?: (e: MobileAssistantEngine) => void;
+  /** Where to open the threshold: the agent and repo of the conversation you
+   *  came back from. Typing straight away continues there. */
+  initialCompanion?: CompanionId;
+  initialRepo?: Repo;
+  initialQuery?: string;
 }) {
-  const [companion, setCompanion] = useState<CompanionId>('claude');
+  const [companion, setCompanion] = useState<CompanionId>(initialCompanion ?? 'claude');
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
-  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
-  const [query, setQuery] = useState('');
+  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(
+    initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
+  );
+  const [query, setQuery] = useState(initialQuery ?? '');
+  useEffect(() => {
+    if (initialQuery) setQuery(initialQuery);
+  }, [initialQuery]);
+  /** Warm nudge when the palette was used with nowhere to work yet. */
+  const [paletteHint, setPaletteHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
 
   const pickCompanion = (id: CompanionId) => {
@@ -207,6 +264,18 @@ export function MobileThreshold({
 
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
   const selectedRepoPath = effectiveRepo?.path;
+
+  // Typing filters the shelves, the same as on the desktop, so the repo a
+  // name points at is visible and tappable before anything is sent.
+  const shownRepos = (() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return regularRepos;
+    return regularRepos.filter((r) =>
+      r.name.toLowerCase().includes(q) ||
+      r.path.toLowerCase().includes(q) ||
+      (r.hub ?? '').toLowerCase().includes(q),
+    );
+  })();
 
   // Morph assistant + non-default engine into that engine's cli at boundary.
   // Codex/Banana use the client-supplied cwd, so we only morph once the live
@@ -221,6 +290,47 @@ export function MobileThreshold({
       ? assistantEngine
       : companion;
 
+  /** What Speak will actually open: a typed exact name wins over the
+   *  highlighted card, so the destination chip has to say so too. */
+  const destRepo =
+    companion === 'assistant'
+      ? effectiveRepo
+      : regularRepos.find((r) => r.name.toLowerCase() === query.trim().toLowerCase()) ?? effectiveRepo;
+
+  /** One rule for the phone's Enter and its Set forth button: a typed exact
+   *  repo name picks that repo; anything else is the first message for the
+   *  repo in the destination chip. */
+  const submitPalette = () => {
+    if (settingForth) return;
+    if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
+    const text = query.trim();
+    if (!text) {
+      if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
+        setPaletteHint('pick a repo below first, then speak');
+        return;
+      }
+      onSetForth({ companion: effectiveCompanion, repo: effectiveRepo });
+      return;
+    }
+    if (effectiveCompanion !== 'assistant') {
+      const pick = regularRepos.find((r) => r.name.toLowerCase() === text.toLowerCase());
+      if (pick) {
+        setSelectedRepo(pick);
+        setQuery('');
+        setPaletteHint(null);
+        onSetForth({ companion: effectiveCompanion, repo: pick });
+        return;
+      }
+      if (!effectiveRepo) {
+        setPaletteHint('pick a repo below first, then speak');
+        return;
+      }
+    }
+    setQuery('');
+    setPaletteHint(null);
+    onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
+  };
+
   return (
     <div
       style={{
@@ -228,8 +338,13 @@ export function MobileThreshold({
         minHeight: 0,
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch',
+        position: 'relative',
       }}
     >
+      <div aria-hidden className="sw-floaters">
+        <span className="sw-blob sw-blob-a" />
+        <span className="sw-blob sw-blob-b" />
+      </div>
     <div
       style={{
         display: 'flex',
@@ -238,6 +353,7 @@ export function MobileThreshold({
         padding: '32px 22px 24px',
         minHeight: '100%',
         position: 'relative',
+        zIndex: 1,
       }}
     >
       {onToggleTheme && (
@@ -266,6 +382,7 @@ export function MobileThreshold({
         </button>
       )}
       <div
+        className="sw-breathe"
         style={{
           padding: 5,
           background: 'var(--vellum)',
@@ -305,10 +422,23 @@ export function MobileThreshold({
         }}
       >
         At your service, master.
-        <span style={{ color: 'var(--ink-faint)' }}> Whither this morning?</span>
+        <span style={{ color: 'var(--ink-faint)' }}> Whither this {dayPart()}?</span>
       </p>
 
-      <div style={{ display: 'flex', gap: 14, marginTop: 26, alignItems: 'center' }}>
+      <div className="sw-ticker" aria-hidden style={{ marginTop: 22, width: '100%' }}>
+        <span
+          className="sw-ticker-track sw-folio"
+          style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-soft)' }}
+        >
+          {Array.from({ length: 2 }).map((_, i) => (
+            <span key={i}>
+              {' '}say a repo's name · /compact lightens a long chat · tap a shelf · ✦ ·{' '}
+            </span>
+          ))}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 14, marginTop: 20, alignItems: 'center' }}>
         <PStat n={STATS.underway} l="underway" tone="ember" />
         <span style={{ width: 1, height: 38, background: 'var(--rule-soft)' }} />
         <PStat n={STATS.awaits} l="awaits" tone="gold" />
@@ -472,10 +602,7 @@ export function MobileThreshold({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!query.trim()) return;
-            const text = query.trim();
-            setQuery('');
-            onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
+            submitPalette();
           }}
           style={{
             padding: '16px 16px',
@@ -490,13 +617,18 @@ export function MobileThreshold({
           <SearchGlyph size={16} />
           <input
             type="search"
+            className="sw-palette-search"
             enterKeyHint="send"
             inputMode="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (paletteHint) setPaletteHint(null);
+            }}
             placeholder="speak, or pick below…"
             style={{
               flex: 1,
+              minWidth: 0,
               border: 0,
               outline: 'none',
               background: 'transparent',
@@ -506,7 +638,35 @@ export function MobileThreshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
+          {companion !== 'assistant' && destRepo && (
+            <span
+              className="sw-mono sw-dest"
+              title={`speaking sets forth into ${destRepo.name}`}
+              style={{
+                fontSize: 10.5,
+                color: 'var(--ember)',
+                border: '1px solid var(--rule-soft)',
+                borderRadius: 999,
+                padding: '3px 8px',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                maxWidth: 118,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              → {destRepo.name}
+            </span>
+          )}
         </form>
+        {paletteHint && (
+          <div
+            className="sw-folio"
+            style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ember)', padding: '8px 16px 10px', borderBottom: '1px solid var(--rule-soft)' }}
+          >
+            {paletteHint}
+          </div>
+        )}
 
         <div style={{ padding: '14px 16px 8px' }}>
           <PSectionLabel folio="i" label="your companion" />
@@ -613,8 +773,19 @@ export function MobileThreshold({
           ) : (
             <>
               {(() => {
-                const starred = regularRepos.filter((r) => r.starred);
-                const rest = regularRepos.filter((r) => !r.starred);
+                const starred = shownRepos.filter((r) => r.starred);
+                const rest = shownRepos.filter((r) => !r.starred);
+                if (query.trim() && shownRepos.length === 0) {
+                  return (
+                    <div
+                      className="sw-folio"
+                      style={{ padding: '6px 4px', fontStyle: 'italic' }}
+                    >
+                      no repo called "{query.trim()}" — the words go to{' '}
+                      {effectiveRepo?.name ?? 'your chat'}
+                    </div>
+                  );
+                }
                 return (
                   <>
                     {starred.length > 0 && (
@@ -625,7 +796,11 @@ export function MobileThreshold({
                             key={r.path}
                             repo={r}
                             selected={r.path === selectedRepoPath}
-                            onClick={() => setSelectedRepo(r)}
+                            onClick={() => {
+                              setSelectedRepo(r);
+                              setQuery('');
+                              setPaletteHint(null);
+                            }}
                             onToggleStar={onToggleStar}
                           />
                         ))}
@@ -637,7 +812,11 @@ export function MobileThreshold({
                         key={r.path}
                         repo={r}
                         selected={r.path === selectedRepoPath}
-                        onClick={() => setSelectedRepo(r)}
+                        onClick={() => {
+                          setSelectedRepo(r);
+                          setQuery('');
+                          setPaletteHint(null);
+                        }}
                         onToggleStar={onToggleStar}
                       />
                     ))}
@@ -667,20 +846,24 @@ export function MobileThreshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
-            tap to set forth
+            {settingForth
+              ? reposError ? 'setting forth · shelves out of reach' : 'setting forth · finding the hub…'
+              : 'tap to set forth'}
           </span>
           <span style={{ marginLeft: 'auto' }} />
+          {reposError && onRetryRepos && (
+            <button
+              className="sw-btn"
+              onClick={onRetryRepos}
+              style={{ fontSize: 13, padding: '8px 12px', minHeight: 0, flexShrink: 0 }}
+            >
+              retry
+            </button>
+          )}
           <button
             className="sw-btn sw-btn-primary"
-            onClick={() => {
-              const text = query.trim();
-              setQuery('');
-              onSetForth({
-                companion: effectiveCompanion,
-                repo: effectiveRepo,
-                initialMessage: text || undefined,
-              });
-            }}
+            disabled={settingForth || (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant')}
+            onClick={submitPalette}
             style={{
               fontSize: 16,
               padding: '12px 22px',
@@ -689,9 +872,10 @@ export function MobileThreshold({
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
               minHeight: 46,
+              opacity: settingForth ? 0.65 : 1,
             }}
           >
-            Set forth ↵
+            {settingForth ? 'Setting forth…' : 'Set forth ↵'}
           </button>
         </div>
       </div>
@@ -758,6 +942,8 @@ export function MobileConversation({
   effort,
   onModelChange,
   onEffortChange,
+  onCompact,
+  compactBusy = false,
 }: {
   agent?: string;
   repo?: string;
@@ -783,6 +969,10 @@ export function MobileConversation({
   effort?: string;
   onModelChange?: (id: string) => void;
   onEffortChange?: (effort: string) => void;
+  /** Manual compact, offered on Claude lanes; receives optional focus text. */
+  onCompact?: (instructions?: string) => void;
+  /** A compact is already in flight. */
+  compactBusy?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; mediaType: string; base64: string; previewUrl: string }>>([]);
@@ -886,6 +1076,18 @@ export function MobileConversation({
 
   const submit = () => {
     if (!draft.trim() && pendingImages.length === 0) return;
+    // /compact is housekeeping, handled before the busy branch so it never
+    // turns into a steer that interrupts the running turn.
+    if (onCompact) {
+      const m = draft.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
+      if (m) {
+        onCompact(m[1].trim() || undefined);
+        setDraft('');
+        for (const i of pendingImages) URL.revokeObjectURL(i.previewUrl);
+        setPendingImages([]);
+        return;
+      }
+    }
     const imgs = pendingImages.length
       ? pendingImages.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
       : undefined;
@@ -974,6 +1176,7 @@ export function MobileConversation({
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             flex: 1,
+            minWidth: 0,
           }}
         >
           {title}
@@ -996,7 +1199,8 @@ export function MobileConversation({
               color: planMode ? 'var(--vellum)' : 'var(--ink-soft)',
               border: '1px solid ' + (planMode ? 'var(--gold)' : 'var(--rule-soft)'),
               borderRadius: 999,
-              padding: '3px 9px',
+              padding: '6px 11px',
+              minHeight: 32,
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
               fontSize: 11,
@@ -1023,7 +1227,8 @@ export function MobileConversation({
               fontSize: 16,
               color: 'var(--ink-soft)',
               cursor: 'pointer',
-              width: 24,
+              width: 32,
+              minHeight: 32,
               flexShrink: 0,
             }}
           >
@@ -1031,6 +1236,23 @@ export function MobileConversation({
           </button>
         )}
       </div>
+      {repo && (
+        <div
+          className="sw-mono"
+          title={repo}
+          style={{
+            padding: '0 10px 5px 10px',
+            fontSize: 9.5,
+            letterSpacing: '0.04em',
+            color: 'var(--ink-soft)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {repo}
+        </div>
+      )}
       {usage && (
         <div
           style={{
@@ -1066,7 +1288,9 @@ export function MobileConversation({
           minHeight: 0,
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '22px 22px 12px',
+          // The chronicle FAB (Sam's portrait) floats over the last lines;
+          // this keeps the final reply readable behind it.
+          padding: '22px 22px 96px',
           background: 'var(--vellum)',
         }}
       >
@@ -1107,6 +1331,9 @@ export function MobileConversation({
         )}
 
         {blocks.map((b) => {
+          if (b.kind === 'divider') {
+            return <ChatDivider key={b.id} label={b.label} done={b.done} />;
+          }
           if (b.kind === 'user') {
             return (
               <UserMessage key={b.id} time={timeLabel(b.ts)} images={b.images}>
@@ -1198,25 +1425,33 @@ export function MobileConversation({
           </div>
         )}
         {modelPicker === 'codex' && onModelChange && onEffortChange && model && effort && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <CodexModelPicker
               model={model}
               effort={effort}
+              drop="up"
               onModelChange={onModelChange}
               onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
             />
+            {onCompact && (
+              <CompactPill onClick={() => onCompact()} disabled={status === 'streaming' || compactBusy} />
+            )}
           </div>
         )}
         {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <ClaudeModelPicker
               model={model}
               effort={effort}
+              drop="up"
               onModelChange={onModelChange}
               onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
             />
+            {onCompact && (
+              <CompactPill onClick={() => onCompact()} disabled={status === 'streaming' || compactBusy} />
+            )}
           </div>
         )}
         {pendingImages.length > 0 && (
@@ -1317,6 +1552,7 @@ export function MobileConversation({
             onSubmit={submit}
             commandPrefix={commandPrefix}
             commands={commands}
+            showCompact={!!onCompact}
           />
           {(() => {
             const hasText = draft.trim().length > 0 || pendingImages.length > 0;
@@ -1375,9 +1611,10 @@ export function MobileConversation({
               background: 'var(--vellum)',
               color: 'var(--ink-soft)',
               borderRadius: 6,
-              padding: '3px 8px',
+              padding: '7px 11px',
+              minHeight: 32,
               fontFamily: 'var(--mono)',
-              fontSize: 11,
+              fontSize: 11.5,
               cursor: 'pointer',
             }}
           >
@@ -1390,9 +1627,10 @@ export function MobileConversation({
               background: 'var(--vellum)',
               color: 'var(--ink-soft)',
               borderRadius: 6,
-              padding: '3px 8px',
+              padding: '7px 11px',
+              minHeight: 32,
               fontFamily: 'var(--mono)',
-              fontSize: 11,
+              fontSize: 11.5,
               cursor: 'pointer',
             }}
           >
@@ -1409,7 +1647,8 @@ export function MobileConversation({
                 background: 'var(--vellum)',
                 color: 'var(--ink-soft)',
                 borderRadius: 6,
-                padding: '3px 10px',
+                padding: '6px 12px',
+                minHeight: 32,
                 fontFamily: 'var(--serif-display)',
                 fontStyle: 'italic',
                 fontSize: 12,
@@ -1652,6 +1891,7 @@ function PCompanion({
 }: { name: string; selected?: boolean; onSelect?: () => void }) {
   return (
     <div
+      className="sw-companion-card"
       onClick={onSelect}
       style={{
         flex: 1,
@@ -1664,9 +1904,14 @@ function PCompanion({
         fontFamily: 'var(--serif-display)',
         fontSize: 13,
         fontWeight: 500,
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
+        lineHeight: 1.2,
+        // Short phones have room for one word per line; wrap "Claude Code"
+        // rather than clipping it to "Claude ...".
+        whiteSpace: 'normal',
+        wordBreak: 'break-word',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
         cursor: 'pointer',
       }}
     >

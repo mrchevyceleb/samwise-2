@@ -11,6 +11,15 @@ export type Companion = {
   sub: string;
 };
 
+/** Which part of the day the greeting should name. Never "this morning"
+ *  at noon. */
+export function dayPart(now: Date = new Date()): 'morning' | 'afternoon' | 'evening' {
+  const h = now.getHours();
+  if (h >= 5 && h < 12) return 'morning';
+  if (h >= 12 && h < 17) return 'afternoon';
+  return 'evening';
+}
+
 export const COMPANIONS: Companion[] = [
   { id: 'claude', name: 'Claude Code', sub: 'full-bodied · tools · 200k window' },
   { id: 'codex', name: 'Codex', sub: 'quick of foot · OpenAI' },

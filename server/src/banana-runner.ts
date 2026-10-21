@@ -2334,7 +2334,7 @@ export class BananaSession {
 
   private emit(msg: SessionEvent): void {
     this.lastActivityAtMs = Date.now();
-    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg, ts: Date.now() };
     // `closed` is a transient lifecycle signal, not conversation history.
     // Persisting it means a future session restores and replays it on
     // reconnect, nulling the WS sessionPromise and killing the session.

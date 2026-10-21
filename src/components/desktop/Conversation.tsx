@@ -1,5 +1,5 @@
 import { useEffect, useRef, type WheelEvent } from 'react';
-import { SamPortrait, Dinkus, Chip } from '../primitives/atoms';
+import { SamPortrait, Dinkus, Chip, ChatDivider } from '../primitives/atoms';
 import {
   SamMessage,
   UserMessage,
@@ -40,6 +40,10 @@ type ConversationProps = {
   effort?: string;
   onModelChange?: (id: string) => void;
   onEffortChange?: (effort: string) => void;
+  /** Manual compact, offered on Claude lanes. */
+  onCompact?: (instructions?: string) => void;
+  /** A compact is already in flight. */
+  compactBusy?: boolean;
 };
 
 const statusToneByStatus: Record<Status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -86,6 +90,8 @@ export function Conversation({
   effort,
   onModelChange,
   onEffortChange,
+  onCompact,
+  compactBusy = false,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -217,31 +223,6 @@ export function Conversation({
                 {planMode ? 'plan mode · on' : 'plan mode · off'}
               </button>
             )}
-            {modelPicker === 'banana' && onModelChange && model && (
-              <BananaModelPicker
-                value={model}
-                onChange={onModelChange}
-                disabled={status === 'streaming'}
-              />
-            )}
-            {modelPicker === 'codex' && onModelChange && onEffortChange && model && effort && (
-              <CodexModelPicker
-                model={model}
-                effort={effort}
-                onModelChange={onModelChange}
-                onEffortChange={onEffortChange}
-                disabled={status === 'streaming'}
-              />
-            )}
-            {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
-              <ClaudeModelPicker
-                model={model}
-                effort={effort}
-                onModelChange={onModelChange}
-                onEffortChange={onEffortChange}
-                disabled={status === 'streaming'}
-              />
-            )}
           </div>
           {(onBack || onFreshStart || usage || (onStop && status === 'streaming')) && (
             <div
@@ -367,6 +348,39 @@ export function Conversation({
           <ChatInput
             agent={agent}
             repo={repo}
+            // The model lives beside the composer, not up in the title area:
+            // the thread can run thousands of pixels past the header, and a
+            // picker Matt has to scroll to the top to find is a picker he
+            // cannot use mid-chat.
+            picker={
+              modelPicker === 'banana' && onModelChange && model ? (
+                <BananaModelPicker
+                  value={model}
+                  onChange={onModelChange}
+                  disabled={status === 'streaming'}
+                />
+              ) : modelPicker === 'codex' && onModelChange && onEffortChange && model && effort ? (
+                <CodexModelPicker
+                  model={model}
+                  effort={effort}
+                  drop="up"
+                  onModelChange={onModelChange}
+                  onEffortChange={onEffortChange}
+                  disabled={status === 'streaming'}
+                />
+              ) : modelPicker === 'claude' && onModelChange && onEffortChange && model && effort ? (
+                <ClaudeModelPicker
+                  model={model}
+                  effort={effort}
+                  drop="up"
+                  onModelChange={onModelChange}
+                  onEffortChange={onEffortChange}
+                  disabled={status === 'streaming'}
+                />
+              ) : undefined
+            }
+            onCompact={modelPicker === 'claude' || modelPicker === 'codex' ? onCompact : undefined}
+            compactBusy={compactBusy}
             placeholder="speak, master…"
             onSend={onSend}
             onSteer={onSteer}
@@ -390,6 +404,9 @@ function renderBlocks(
   status: Status,
 ) {
   return blocks.map((b) => {
+    if (b.kind === 'divider') {
+      return <ChatDivider key={b.id} label={b.label} done={b.done} />;
+    }
     if (b.kind === 'user') {
       return (
         <UserMessage key={b.id} time={timeLabel(b.ts)} images={b.images}>
@@ -483,7 +500,8 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function timeLabel(ts: number): string {
+function timeLabel(ts?: number): string | undefined {
+  if (typeof ts !== 'number') return undefined;
   const d = new Date(ts);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }

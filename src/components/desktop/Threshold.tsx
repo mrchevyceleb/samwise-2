@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { SamPortrait, SearchGlyph } from '../primitives/atoms';
 import {
   COMPANIONS,
@@ -6,6 +6,7 @@ import {
   HUBS,
   STATS,
   ASSISTANT_HUB,
+  dayPart,
   type CompanionId,
   type Repo,
   type Hub,
@@ -22,6 +23,11 @@ const ASSISTANT_ENGINES: { id: AssistantEngine; label: string }[] = [
 type ThresholdProps = {
   repos: Repo[];
   reposLoading?: boolean;
+  /** A set-forth is held until the repo list resolves the live hub. */
+  settingForth?: boolean;
+  /** The repo list itself failed; offer a retry instead of a dead hold. */
+  reposError?: boolean;
+  onRetryRepos?: () => void;
   onSetForth: (params: {
     companion: CompanionId;
     repo?: Repo;
@@ -30,22 +36,43 @@ type ThresholdProps = {
   onToggleStar?: (path: string) => void;
   assistantEngine?: AssistantEngine;
   onAssistantEngineChange?: (e: AssistantEngine) => void;
+  /** Where to open the threshold: the agent and repo of the conversation you
+   *  came back from. Typing straight away continues there. */
+  initialCompanion?: CompanionId;
+  initialRepo?: Repo;
+  /** Words handed back after a set-forth that could not open. */
+  initialQuery?: string;
 };
 
 export function Threshold({
   repos,
   reposLoading,
+  settingForth = false,
+  reposError = false,
+  onRetryRepos,
   onSetForth,
   onToggleStar,
   assistantEngine = 'claude',
   onAssistantEngineChange,
+  initialCompanion,
+  initialRepo,
+  initialQuery,
 }: ThresholdProps) {
-  const [companion, setCompanion] = useState<CompanionId>('claude');
+  const [companion, setCompanion] = useState<CompanionId>(initialCompanion ?? 'claude');
   // The Assistant Hub from the live repo list, if discovered. Falls back to the constant.
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
-  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
-  const [query, setQuery] = useState('');
+  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(
+    initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
+  );
+  const [query, setQuery] = useState(initialQuery ?? '');
+  // A prompt handed back while the threshold stayed mounted (a held set-forth
+  // that found no repo) must appear in the box, not just in the initial state.
+  useEffect(() => {
+    if (initialQuery) setQuery(initialQuery);
+  }, [initialQuery]);
+  /** Warm nudge when a set-forth has nowhere to work yet. */
+  const [hint, setHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
 
   const filteredRepos = (() => {
@@ -80,27 +107,70 @@ export function Threshold({
       ? assistantEngine
       : companion;
 
+  /** The repo a typed name points at: an exact name only. A substring rule
+   *  swallowed real one-word messages ("test", "fix", "status") whenever a
+   *  repo happened to contain them, and opened a thread the user never chose. */
+  const typedRepo = (text: string): Repo | undefined => {
+    const q = text.trim().toLowerCase();
+    if (!q) return undefined;
+    return regularRepos.find((r) => r.name.toLowerCase() === q);
+  };
+
+  /** What Enter will actually open: a typed exact name wins over the
+   *  highlighted card, so the destination chip has to say so too. */
+  const destRepo = companion === 'assistant' ? effectiveRepo : typedRepo(query) ?? effectiveRepo;
+
   const setForth = (initialMessage?: string) => {
+    // The repo list has not landed yet, so nothing can be resolved from what
+    // was typed. Opening now would land in a thread with no repo, where the
+    // typed message can never be sent. Keep it on the threshold; the list is
+    // a fraction of a second away.
+    if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return false;
+    if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
+      // A name typed with no repo chosen is a repo pick, not a message.
+      const pick = typedRepo(query.trim() || initialMessage || '');
+      if (pick) {
+        setSelectedRepo(pick);
+        setQuery('');
+        setHint(null);
+        onSetForth({ companion: effectiveCompanion, repo: pick });
+        return true;
+      }
+      setHint('pick a repo below first, then set forth');
+      return false;
+    }
+    setHint(null);
     onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage });
+    return true;
+  };
+
+  /** One rule for Enter and for the Set forth button: a typed repo name picks
+   *  that repo, anything else becomes the first message for the repo shown in
+   *  the destination chip. The box is only cleared when something opened. */
+  const submitQuery = () => {
+    if (settingForth) return;
+    const text = query.trim();
+    if (!text) {
+      setForth(undefined);
+      return;
+    }
+    if (companion !== 'assistant') {
+      const pick = typedRepo(text);
+      if (pick) {
+        setSelectedRepo(pick);
+        setQuery('');
+        setHint(null);
+        onSetForth({ companion: effectiveCompanion, repo: pick });
+        return;
+      }
+    }
+    if (setForth(text)) setQuery('');
   };
 
   const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter' || !query.trim()) return;
     e.preventDefault();
-    // If exactly one repo matches, treat the typed text as a repo selector and
-    // just set forth without a message. Otherwise treat it as the first message.
-    if (
-      companion !== 'assistant' &&
-      filteredRepos.length === 1 &&
-      query.trim() === filteredRepos[0].name
-    ) {
-      setSelectedRepo(filteredRepos[0]);
-      setQuery('');
-      onSetForth({ companion: effectiveCompanion, repo: filteredRepos[0] });
-      return;
-    }
-    setForth(query.trim());
-    setQuery('');
+    submitQuery();
   };
 
   return (
@@ -109,10 +179,17 @@ export function Threshold({
         flex: 1,
         minHeight: 0,
         overflowY: 'auto',
+        position: 'relative',
       }}
     >
+      <div aria-hidden className="sw-floaters">
+        <span className="sw-blob sw-blob-a" />
+        <span className="sw-blob sw-blob-b" />
+      </div>
     <div
       style={{
+        position: 'relative',
+        zIndex: 1,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -122,6 +199,7 @@ export function Threshold({
     >
       {/* Sam himself + title block */}
       <div
+        className="sw-breathe"
         style={{
           padding: 7,
           background: 'var(--vellum)',
@@ -164,9 +242,22 @@ export function Threshold({
         At your service, master.
         <span style={{ color: 'var(--ink-faint)' }}>
           {' '}
-          Whither shall we go this morning?
+          Whither shall we go this {dayPart()}?
         </span>
       </p>
+      <div className="sw-ticker" aria-hidden style={{ marginTop: 26, width: '100%', maxWidth: 960 }}>
+        <span
+          className="sw-ticker-track sw-folio"
+          style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-soft)' }}
+        >
+          {Array.from({ length: 2 }).map((_, i) => (
+            <span key={i}>
+              {' '}say a repo's name to set forth · /compact keeps a long chat light ·
+              {' '}⌘K switches companion · ✦ ·{' '}
+            </span>
+          ))}
+        </span>
+      </div>
 
       {/* Stats strip */}
       <div style={{ display: 'flex', gap: 24, marginTop: 40, alignItems: 'center' }}>
@@ -203,7 +294,10 @@ export function Threshold({
           <SearchGlyph size={18} />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (hint) setHint(null);
+            }}
             onKeyDown={handleSearchKey}
             placeholder="type to begin, or pick from below"
             style={{
@@ -217,6 +311,26 @@ export function Threshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
+          {companion !== 'assistant' && destRepo && (
+            <span
+              className="sw-mono sw-dest"
+              title={`Enter sets forth into ${destRepo.name}`}
+              style={{
+                fontSize: 12,
+                color: 'var(--ember)',
+                border: '1px solid var(--rule-soft)',
+                borderRadius: 999,
+                padding: '3px 10px',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                maxWidth: 220,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              → {destRepo.name}
+            </span>
+          )}
           <span className="sw-folio">⌘K</span>
         </div>
 
@@ -365,7 +479,13 @@ export function Threshold({
                           key={r.path}
                           repo={r}
                           selected={r.path === selectedRepoPath}
-                          onClick={() => setSelectedRepo(r)}
+                          onClick={() => {
+                            setSelectedRepo(r);
+                            // The text was a filter, not a message. Leaving it
+                            // in made "Set forth" send it as the first prompt.
+                            setQuery('');
+                            setHint(null);
+                          }}
                           onToggleStar={onToggleStar}
                         />
                       ))}
@@ -407,18 +527,42 @@ export function Threshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic' }}>
-            ↵ to set forth · ⌘ + ↑/↓ to walk through
+            {hint
+              ? hint
+              : settingForth
+              ? reposError
+                ? 'setting forth · shelves out of reach'
+                : 'setting forth · finding the hub…'
+              : reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant'
+                ? 'scanning the shelves · one moment…'
+                : '↵ to set forth · ⌘ + ↑/↓ to walk through'}
           </span>
           <span style={{ marginLeft: 'auto' }}></span>
+          {reposError && onRetryRepos && (
+            <button
+              className="sw-btn"
+              onClick={onRetryRepos}
+              style={{ fontSize: 13, padding: '6px 12px', minHeight: 0 }}
+            >
+              retry
+            </button>
+          )}
           <button
             className="sw-btn sw-btn-primary"
-            style={{ fontSize: 16, padding: '10px 24px' }}
+            disabled={settingForth || (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant')}
+            style={{
+              fontSize: 16,
+              padding: '10px 24px',
+              opacity: settingForth ? 0.65 : 1,
+              cursor: settingForth ? 'default' : 'pointer',
+            }}
             onClick={() => {
-              setForth(query.trim() || undefined);
-              setQuery('');
+              if (settingForth) return;
+              if (query.trim()) submitQuery();
+              else setForth(undefined);
             }}
           >
-            Set forth
+            {settingForth ? 'Setting forth…' : 'Set forth'}
           </button>
         </div>
       </div>
@@ -521,6 +665,7 @@ function CompanionPick({
 }: { name: string; sub: string; selected?: boolean; onSelect?: () => void }) {
   return (
     <div
+      className="sw-companion-card"
       onClick={onSelect}
       style={{
         flex: 1,

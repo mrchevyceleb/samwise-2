@@ -21,7 +21,7 @@ export const CODEX_MODELS: CodexModelSpec[] = [
   {
     id: 'gpt-6.1-sol',
     label: 'GPT-6.1 Sol',
-    defaultEffort: 'low',
+    defaultEffort: 'medium',
     efforts: ULTRA_EFFORTS,
     contextWindow: 500_000,
   },

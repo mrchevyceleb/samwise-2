@@ -122,7 +122,7 @@ const EVENT_BUFFER_SIZE = 2000;
 // reattach to the warm process; longer than that we give back the resources.
 export const IDLE_TTL_MS = 30 * 60 * 1000;
 
-export type SeqEvent = { seq: number; ev: SessionEvent };
+export type SeqEvent = { seq: number; ev: SessionEvent; /** wall-clock ms when the event was emitted; replayed so block timestamps survive restarts */ ts?: number };
 
 class ClaudeSession {
   readonly key: string;
@@ -376,6 +376,43 @@ class ClaudeSession {
     }
   }
 
+  /** Compact the conversation in place: the CLI's own /compact. The child
+   *  keeps its session id (the transcript on disk gets a compact boundary),
+   *  so the next turn continues under the summarized context. The CLI emits
+   *  `system compact_boundary` with pre/post token counts when it lands, and
+   *  a final `result`, which ends the turn like any other. */
+  compact(instructions?: string): void {
+    if (this.child.exitCode !== null) {
+      this.emit({ type: 'error', message: 'session has exited' });
+      // The turn was already announced upstream; a turn with no turnEnd
+      // leaves the client streaming until its watchdog fires.
+      this.turnStartedAt = null;
+      this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
+      return;
+    }
+    this.turnStartedAt = Date.now();
+    // Marker for the thread: no _user_echo here, because the user did not
+    // type anything. The client renders this as a small rule, then updates
+    // it with the compact_boundary's token counts.
+    this.emit({ type: 'event', event: { type: '_compact', ts: Date.now() } });
+    const payload = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: instructions ? `/compact ${instructions}` : '/compact',
+      },
+    });
+    try {
+      this.child.stdin.write(payload + '\n');
+    } catch (e) {
+      // The turn was already announced; without a turnEnd the server stays
+      // busy and the client stays streaming.
+      this.turnStartedAt = null;
+      this.emit({ type: 'error', message: `compact write failed: ${(e as Error).message}` });
+      this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
+    }
+  }
+
   /** Reply to a tool the model is waiting on (AskUserQuestion, ExitPlanMode,
    *  any other interactive tool that needs a tool_result to advance the turn).
    *  We keep this separate from `send` because tool_result is part of the
@@ -526,7 +563,7 @@ class ClaudeSession {
 
   private emit(msg: SessionEvent): void {
     this.lastActivityAtMs = Date.now();
-    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg, ts: Date.now() };
     this.eventLog.push(se);
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);

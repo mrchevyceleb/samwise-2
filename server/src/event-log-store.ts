@@ -9,7 +9,7 @@ import type { SessionEvent } from './runner.ts';
 // wake-up with a stale sinceSeq from losing the agent's already-streamed
 // output.
 
-export type PersistedEvent = { seq: number; ev: SessionEvent };
+export type PersistedEvent = { seq: number; ev: SessionEvent; ts?: number };
 
 export const EVENT_LOG_DIR = join(STATE_DIR, 'event-logs');
 export const MAX_EVENTS_PER_LOG = 2000;
@@ -37,7 +37,11 @@ export function loadEventLogSync(key: string): { events: PersistedEvent[]; nextS
     try {
       const parsed = JSON.parse(line);
       if (typeof parsed?.seq === 'number' && parsed?.ev) {
-        events.push({ seq: parsed.seq, ev: parsed.ev as SessionEvent });
+        events.push({
+          seq: parsed.seq,
+          ev: parsed.ev as SessionEvent,
+          ...(typeof parsed.ts === 'number' ? { ts: parsed.ts } : {}),
+        });
       }
     } catch {
       // skip malformed/incomplete append lines

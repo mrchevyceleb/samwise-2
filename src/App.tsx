@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Threshold } from './components/desktop/Threshold';
 import { Conversation } from './components/desktop/Conversation';
 import { ChronicleRibbon } from './components/desktop/ChronicleRibbon';
@@ -24,16 +24,57 @@ import {
 import {
   normalizeClaudeEffort,
   normalizeClaudeModel,
+  readSessionClaudeSelection,
   readStoredClaudeEffort,
   readStoredClaudeModel,
+  writeSessionClaudeSelection,
   writeStoredClaudeSelection,
 } from './components/primitives/claudeModels';
+import { readChatPick, writeChatPick } from './data/modelMemory';
 import { useLive } from './hooks/useLive';
 import { useLiveBranch } from './hooks/useLiveBranch';
 import { useTheme } from './hooks/useTheme';
 import { ASSISTANT_HUB } from './data/mock';
 
 type View = 'threshold' | 'conversation';
+
+/** Shown for the brief moment a restored conversation waits for the repo
+ *  list to say where it lives. Same vellum, same pulse as a live turn. */
+function MakingReady({ error = false, onRetry }: { error?: boolean; onRetry?: () => void }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+      }}
+    >
+      {!error && (
+        <span className="sw-thinking">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+      )}
+      <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 13 }}>
+        {error ? 'the shelves are out of reach' : 'making ready…'}
+      </span>
+      {error && onRetry && (
+        <button
+          className="sw-btn"
+          onClick={onRetry}
+          style={{ fontSize: 13, padding: '6px 14px', minHeight: 0 }}
+        >
+          try again
+        </button>
+      )}
+    </div>
+  );
+}
 
 // Persist the active conversation across page reloads so a phone lock /
 // browser refresh / network blip lands you back where you were and the
@@ -145,12 +186,26 @@ export default function App() {
   const [companion, setCompanion] = useState<CompanionId>(initialActive?.cli ?? 'claude');
   const [repo, setRepo] = useState<Repo | undefined>(undefined);
   const restorePathRef = useRef<string | null>(initialActive?.repoPath ?? null);
+  /** A set-forth that hit the placeholder hub before /api/repos resolved.
+   *  Held here and opened the moment the live hub arrives, so a conversation
+   *  never starts on a half-known repo (wrong title, wrong model, and a
+   *  session key the server never uses). */
+  const saddlingRef = useRef<{
+    companion: CompanionId;
+    repo?: Repo;
+    initialMessage?: string;
+    chatId: string;
+  } | null>(null);
+  const [saddling, setSaddling] = useState(false);
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [chronicleCollapsed, setChronicleCollapsed] = useState(readChronicleCollapsed);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [chatId, setChatId] = useState<string>(initialActive?.chatId ?? 'main');
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
+  /** Text handed back to the threshold when a set-forth could not open (a
+   *  hold that found no repo). The words are restored instead of lost. */
+  const [thresholdDraft, setThresholdDraft] = useState('');
   // Chosen Banana model. Defaults to the last pick (initial default
   // monkey/silverback). Only the Banana runner sends it.
   const [bananaModel, setBananaModel] = useState<string>(readStoredBananaModel);
@@ -158,33 +213,47 @@ export default function App() {
   const [codexEffort, setCodexEffort] = useState<string>(
     () => readStoredCodexEffort(codexModel),
   );
+  /** True once the picker is touched in this view. A late first `ready` must
+   *  never adopt over a pick the user just made. */
+  const userPickedRef = useRef(false);
+  /** Per-chat picks are stored under the lane that owns the picker. The
+   *  assistant lane shows the Claude picker, so it shares Claude's memory. */
+  const pickLane = (c: CompanionId): string => (c === 'assistant' ? 'claude' : c);
   const changeCodexModel = (value: string) => {
+    userPickedRef.current = true;
     const model = normalizeCodexModel(value);
     const effort = normalizeCodexEffort(model, codexEffort);
     setCodexModel(model);
     setCodexEffort(effort);
     writeStoredCodexSelection(model, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, model, effort);
   };
   const changeCodexEffort = (value: string) => {
+    userPickedRef.current = true;
     const effort = normalizeCodexEffort(codexModel, value);
     setCodexEffort(effort);
     writeStoredCodexSelection(codexModel, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, codexModel, effort);
   };
   const [claudeModel, setClaudeModel] = useState<string>(readStoredClaudeModel);
   const [claudeEffort, setClaudeEffort] = useState<string>(
     () => readStoredClaudeEffort(claudeModel),
   );
   const changeClaudeModel = (value: string) => {
+    userPickedRef.current = true;
     const model = normalizeClaudeModel(value);
     const effort = normalizeClaudeEffort(model, claudeEffort);
     setClaudeModel(model);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(model, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, model, effort);
   };
   const changeClaudeEffort = (value: string) => {
+    userPickedRef.current = true;
     const effort = normalizeClaudeEffort(claudeModel, value);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(claudeModel, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, claudeModel, effort);
   };
   const [assistantEngine, setAssistantEngineState] = useState<AssistantEngine>(readAssistantEngine);
   const setAssistantEngine = (e: AssistantEngine) => {
@@ -201,28 +270,118 @@ export default function App() {
     onInitialMessageSent: () => setPendingFirstMessage(null),
     model: companion === 'codex' ? codexModel
       : companion === 'banana' ? bananaModel
-      : companion === 'claude' ? claudeModel
+      // The assistant lane runs the Claude CLI, so it carries the Claude pair.
+      : companion === 'claude' || companion === 'assistant' ? claudeModel
       : undefined,
     effort: companion === 'codex' ? codexEffort
-      : companion === 'claude' ? claudeEffort
+      : companion === 'claude' || companion === 'assistant' ? claudeEffort
       : undefined,
+    // A warm Claude session already runs at a fixed model + effort. Adopt it
+    // so a browser that never made the pick (the phone) shows the truth, but
+    // never over a pick made explicitly on this device. Returns true when it
+    // adopted, which tells useChat the pending first message must go out at
+    // the session's model instead of a stale stored default (that recycle
+    // would otherwise drag the session back to the default).
+    onSessionSelection: (sessionModel, sessionEffort) => {
+      if (companion === 'codex') {
+        const nextModel = normalizeCodexModel(sessionModel);
+        const nextEffort = normalizeCodexEffort(nextModel, sessionEffort);
+        // A pick made in this view, or one remembered for this chat, outranks
+        // anything the session reports: the next send carries it.
+        if (userPickedRef.current || readChatPick('codex', repo?.path, chatId)) return null;
+        // Show the session's truth without moving the global fallback: opening
+        // one chat must not change the default for every other chat.
+        setCodexModel(nextModel);
+        setCodexEffort(nextEffort);
+        return { model: nextModel, effort: nextEffort };
+      }
+      if (companion !== 'claude' && companion !== 'assistant') return null;
+      const nextModel = normalizeClaudeModel(sessionModel);
+      const nextEffort = normalizeClaudeEffort(nextModel, sessionEffort);
+      const mirror = readSessionClaudeSelection();
+      const storedModel = readStoredClaudeModel();
+      const storedEffort = readStoredClaudeEffort(storedModel);
+      // A pick made in THIS view outranks anything the session reports: the
+      // next send recycles the session to it. A late first `ready` racing a
+      // fast pick used to overwrite the picker (and the compact that followed
+      // went out at the old model).
+      if (userPickedRef.current) {
+        if (nextModel === storedModel && nextEffort === storedEffort) {
+          writeSessionClaudeSelection(nextModel, nextEffort);
+        }
+        return null;
+      }
+      // This chat has a pick of its own (made here, possibly never sent yet).
+      // Keep showing it; the next send recycles the session onto it.
+      if (readChatPick('claude', repo?.path, chatId)) return null;
+      const explicitPick = !!mirror.model
+        && (mirror.model !== storedModel || mirror.effort !== storedEffort);
+      if (explicitPick) {
+        // This browser holds an explicit pick (model or effort). If the
+        // session has caught up to it, resume tracking the session so later
+        // cross-device changes still follow; otherwise leave the pick alone.
+        if (nextModel === storedModel && nextEffort === storedEffort) {
+          writeSessionClaudeSelection(nextModel, nextEffort);
+        }
+        return null;
+      }
+      setClaudeModel(nextModel);
+      setClaudeEffort(nextEffort);
+      // The session mirror still tracks cross-device changes, but the global
+      // stored pick stays whatever the user last chose explicitly.
+      writeSessionClaudeSelection(nextModel, nextEffort);
+      return { model: nextModel, effort: nextEffort };
+    },
   });
+
+  // Restore the picker to this chat's own pick the moment the chat changes.
+  // The global keys are the fallback for a chat that has never had one, so a
+  // change made on another device (or in another chat) does not leak in.
+  useEffect(() => {
+    userPickedRef.current = false;
+    if (!repo?.path) return;
+    const pick = readChatPick(pickLane(companion), repo.path, chatId);
+    if (!pick) {
+      // No pick of its own: fall back to the global last pick. Leaving the
+      // previous chat's model on screen would be a lie about this chat.
+      if (companion === 'codex') {
+        const model = readStoredCodexModel();
+        setCodexModel(model);
+        setCodexEffort(readStoredCodexEffort(model));
+      } else if (companion === 'claude' || companion === 'assistant') {
+        const model = readStoredClaudeModel();
+        setClaudeModel(model);
+        setClaudeEffort(readStoredClaudeEffort(model));
+      }
+      return;
+    }
+    userPickedRef.current = true;
+    if (companion === 'codex') {
+      const model = normalizeCodexModel(pick.model);
+      setCodexModel(model);
+      setCodexEffort(normalizeCodexEffort(model, pick.effort));
+    } else if (companion === 'claude' || companion === 'assistant') {
+      const model = normalizeClaudeModel(pick.model);
+      setClaudeModel(model);
+      setClaudeEffort(normalizeClaudeEffort(model, pick.effort));
+    }
+  }, [companion, repo?.path, chatId]);
 
   // Once repos load, bind the restore-target path to a real Repo object.
   useEffect(() => {
     if (!restorePathRef.current || repo) return;
-    if (repos.length === 0) return;
     const target = repos.find((r) => r.path === restorePathRef.current);
     if (target) {
       setRepo(target);
       restorePathRef.current = null;
-    } else if (!reposLoading) {
-      // Repo was removed since we saved the active session — drop it.
+    } else if (reposState.status === 'ready') {
+      // Only a SUCCESSFUL list can prove the repo is gone. A transient fetch
+      // failure must not throw away the saved conversation.
       restorePathRef.current = null;
       writeActive(null);
       setView('threshold');
     }
-  }, [repos, reposLoading, repo]);
+  }, [repos, reposState.status, repo]);
 
   // Track the live branch for the active repo so `git checkout` mid-chat
   // updates the header chip and the chat-input footer in real time.
@@ -236,42 +395,124 @@ export default function App() {
     if (prevStatusRef.current === 'streaming' && chat.status === 'ready') {
       setChronicleTick((t) => t + 1);
       liveBranch.refresh();
+      // The ribbon's tending/idle chip is polled every 4s. A finished turn
+      // must not keep reading "tending" next to the reply that just landed.
+      refetchLive();
     }
     prevStatusRef.current = chat.status;
-  }, [chat.status, liveBranch]);
+  }, [chat.status, liveBranch, refetchLive]);
 
   // Derive a title from the user's first message in the chat.
   useEffect(() => {
     const firstUser = chat.blocks.find((b) => b.kind === 'user');
     if (firstUser && firstUser.kind === 'user') {
-      const t = firstUser.text.trim().split('\n')[0].slice(0, 60);
+      // Cut on a word, not mid-word: a title that ends "…colour is teal. Re"
+      // looks broken in the header.
+      const oneLine = firstUser.text.trim().split('\n')[0].replace(/\s+/g, ' ');
+      const t = (() => {
+        if (oneLine.length <= 46) return oneLine;
+        const head = oneLine.slice(0, 46);
+        const at = head.lastIndexOf(' ');
+        const kept = (at > 12 ? head.slice(0, at) : head).replace(/[\s,;:.!?]+$/, '');
+        return `${kept}…`;
+      })();
       if (t) setErrandTitle(t);
     } else if (view === 'conversation' && chat.blocks.length === 0) {
       setErrandTitle('a fresh errand');
     }
   }, [chat.blocks, view]);
 
-  const setForth = ({
-    companion: c,
-    repo: r,
-    initialMessage,
-    chatId: nextChatId,
-  }: {
+  const openConversation = useCallback(
+    ({
+      companion: c,
+      repo: r,
+      initialMessage,
+      chatId: nextChatId,
+    }: {
+      companion: CompanionId;
+      repo?: Repo;
+      initialMessage?: string;
+      chatId?: string | null;
+    }) => {
+      const normalizedChatId = nextChatId || 'main';
+      restorePathRef.current = null;
+      setCompanion(c);
+      setRepo(r);
+      setChatId(normalizedChatId);
+      setView('conversation');
+      setErrandTitle('a fresh errand');
+      setThresholdDraft('');
+      setPendingFirstMessage(initialMessage ?? null);
+      if (r) writeActive({ cli: c, repoPath: r.path, chatId: normalizedChatId });
+      else writeActive(null);
+    },
+    [],
+  );
+
+  const setForth = (params: {
     companion: CompanionId;
     repo?: Repo;
     initialMessage?: string;
     chatId?: string | null;
   }) => {
-    const normalizedChatId = nextChatId || 'main';
-    setCompanion(c);
-    setRepo(r);
-    setChatId(normalizedChatId);
-    setView('conversation');
-    setErrandTitle('a fresh errand');
-    setPendingFirstMessage(initialMessage ?? null);
-    if (r) writeActive({ cli: c, repoPath: r.path, chatId: normalizedChatId });
-    else writeActive(null);
+    const { companion: c, repo: r, initialMessage, chatId: nextChatId } = params;
+    // Before /api/repos resolves the threshold can only offer the placeholder
+    // hub, whose path belongs to a different machine. Opening a conversation
+    // on it shows an empty page under the wrong title and model, and makes the
+    // client expect a session key the server never uses (every stream event
+    // gets dropped). Hold the whole request instead; the effect below opens it
+    // the moment the real hub lands.
+    if (r && r.path === ASSISTANT_HUB.path && !repos.some((known) => known.isAssistantHub)) {
+      saddlingRef.current = {
+        companion: c,
+        repo: undefined,
+        initialMessage,
+        chatId: nextChatId || 'main',
+      };
+      setSaddling(true);
+      return;
+    }
+    openConversation({ companion: c, repo: r, initialMessage, chatId: nextChatId });
   };
+
+  // Release a held set-forth once the repo list settles. A live hub is the
+  // happy path; if the server never announces one, open the request as-is so
+  // the typed prompt is never stranded on the threshold.
+  const liveHubRepo = repos.find((known) => known.isAssistantHub);
+  useEffect(() => {
+    const held = saddlingRef.current;
+    if (!held) return;
+    if (liveHubRepo) {
+      saddlingRef.current = null;
+      setSaddling(false);
+      // The engine picked on the threshold is carried through the hold: the
+      // Assistant lane runs whichever engine is selected, and by now the hub
+      // is real, so a Codex/Banana pick is safe to apply.
+      const c = held.companion === 'assistant' && assistantEngine !== 'claude'
+        ? assistantEngine
+        : held.companion;
+      openConversation({ ...held, companion: c, repo: liveHubRepo });
+    } else if (reposState.status === 'ready') {
+      // A successful list with no hub announced. Open the request with a real
+      // repo: a thread with no repo cannot send at all, so opening one would
+      // strand the typed prompt worse than staying on the threshold. A failed
+      // fetch keeps the hold.
+      saddlingRef.current = null;
+      setSaddling(false);
+      // An assistant-lane prompt must never be opened against an unrelated
+      // repo (the server would run it in the hub anyway). Only a non-assistant
+      // request may fall back, and when nothing can open, the words go back
+      // into the threshold box instead of vanishing.
+      const fallback = held.repo
+        ?? (held.companion === 'assistant' ? undefined : repos.find((known) => !known.isAssistantHub));
+      if (fallback) {
+        openConversation({ ...held, repo: fallback });
+      } else {
+        setThresholdDraft(held.initialMessage ?? '');
+        setView('threshold');
+      }
+    }
+  }, [liveHubRepo, reposState.status, repos, openConversation, assistantEngine]);
 
   const repoForPath = (path: string, name?: string): Repo => {
     const known = repos.find((r) => r.path === path);
@@ -341,44 +582,66 @@ export default function App() {
     writeActive(null);
   };
 
+  // Returning to the threshold should land on the agent, engine and repo the
+  // conversation was actually using, not the threshold's own defaults — typing
+  // straight away must never quietly switch to a different agent or repo.
+  const assistantHubPath = repos.find((r) => r.isAssistantHub)?.path ?? ASSISTANT_HUB.path;
+  const onAssistantHub = !!repo && (repo.isAssistantHub || repo.path === assistantHubPath);
+  const thresholdCompanion: CompanionId = onAssistantHub ? 'assistant' : companion;
+
   const branchForLabel = liveBranch.branch ?? repo?.branch;
   const repoLabel = repo
     ? `${repo.name}${branchForLabel ? ` · ${branchForLabel}` : ''}`
     : 'just chatting';
   const commandPrefix = companion === 'codex' ? '$' : '/';
+  // /compact is a CLI built-in, not a file in ~/.claude/commands, so it is
+  // added here for the Claude lanes. Typing it sends the compact action
+  // instead of a chat message.
+  const claudeCommands = commands.claude.some((c) => c.name === 'compact')
+    ? commands.claude
+    : [
+        { name: 'compact', title: 'Compact', description: 'summarize this chat and make room' },
+        ...commands.claude,
+      ];
   const activeCommands =
     companion === 'codex' ? commands.codex
     : companion === 'banana' ? commands.banana
-    : commands.claude;
+    : claudeCommands;
 
   const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
+
+  // Restoring a saved conversation before /api/repos resolves: the repo (and
+  // so the title, model and session key) is not known yet. Show an honest
+  // "making ready" instead of an empty conversation under a wrong heading.
+  const awaitingRestore = view === 'conversation' && !repo && restorePathRef.current !== null;
 
   useEffect(() => {
     localStorage.setItem(CHRONICLE_COLLAPSED_KEY, chronicleCollapsed ? '1' : '0');
   }, [chronicleCollapsed]);
 
-  // Model-picker wiring for the active companion. Claude and Codex expose a
-  // model + reasoning-effort pair; Banana a model only; Assistant none.
+  // Model-picker wiring for the active companion. Claude, Codex and the
+  // assistant lane (which runs the Claude CLI) expose a model + reasoning-
+  // effort pair; Banana a model only.
   const activeModelPicker: 'banana' | 'codex' | 'claude' | undefined =
     companion === 'banana' ? 'banana'
     : companion === 'codex' ? 'codex'
-    : companion === 'claude' ? 'claude'
+    : companion === 'claude' || companion === 'assistant' ? 'claude'
     : undefined;
   const pickerModel =
     companion === 'codex' ? codexModel
-    : companion === 'claude' ? claudeModel
+    : companion === 'claude' || companion === 'assistant' ? claudeModel
     : bananaModel;
   const pickerEffort =
     companion === 'codex' ? codexEffort
-    : companion === 'claude' ? claudeEffort
+    : companion === 'claude' || companion === 'assistant' ? claudeEffort
     : undefined;
   const onPickerModelChange =
     companion === 'codex' ? changeCodexModel
-    : companion === 'claude' ? changeClaudeModel
+    : companion === 'claude' || companion === 'assistant' ? changeClaudeModel
     : setBananaModel;
   const onPickerEffortChange =
     companion === 'codex' ? changeCodexEffort
-    : companion === 'claude' ? changeClaudeEffort
+    : companion === 'claude' || companion === 'assistant' ? changeClaudeEffort
     : undefined;
 
   if (isMobile) {
@@ -386,6 +649,7 @@ export default function App() {
       <div className={appClass}>
         {view === 'threshold' ? (
           <MobileThreshold
+            initialQuery={thresholdDraft}
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
@@ -399,7 +663,14 @@ export default function App() {
             onToggleTheme={toggleTheme}
             assistantEngine={assistantEngine}
             onAssistantEngineChange={setAssistantEngine}
+            initialCompanion={thresholdCompanion}
+            initialRepo={repo}
+            settingForth={saddling}
+            reposError={reposState.status === 'error'}
+            onRetryRepos={() => reposState.reload()}
           />
+        ) : awaitingRestore ? (
+          <MakingReady error={reposState.status === 'error'} onRetry={() => reposState.reload()} />
         ) : (
           <MobileConversation
             agent={COMPANION_LABEL[companion]}
@@ -426,6 +697,8 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
+            onCompact={companion === 'claude' || companion === 'assistant' || companion === 'codex' ? chat.compact : undefined}
+            compactBusy={chat.compacting}
           />
         )}
         <MobileChronicleSheet
@@ -479,13 +752,21 @@ export default function App() {
       >
         {view === 'threshold' ? (
           <Threshold
+            initialQuery={thresholdDraft}
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
             onToggleStar={toggleRepoStar}
             assistantEngine={assistantEngine}
             onAssistantEngineChange={setAssistantEngine}
+            initialCompanion={thresholdCompanion}
+            initialRepo={repo}
+            settingForth={saddling}
+            reposError={reposState.status === 'error'}
+            onRetryRepos={() => reposState.reload()}
           />
+        ) : awaitingRestore ? (
+          <MakingReady error={reposState.status === 'error'} onRetry={() => reposState.reload()} />
         ) : (
           <Conversation
             agent={COMPANION_LABEL[companion]}
@@ -511,6 +792,8 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
+            onCompact={companion === 'claude' || companion === 'assistant' || companion === 'codex' ? chat.compact : undefined}
+            compactBusy={chat.compacting}
           />
         )}
       </main>

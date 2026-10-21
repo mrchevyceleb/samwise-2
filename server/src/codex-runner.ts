@@ -6,6 +6,7 @@ import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { IDLE_TTL_MS } from './runner.ts';
 import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
 import { resolveCodexSelection } from './codex-models.ts';
+import { compactCodexThread } from './codex-app-server.ts';
 import {
   appendEventLog,
   clearEventLog,
@@ -125,6 +126,17 @@ export class CodexSession {
   private subscriberCount = 0;
   private threadId: string | null = null;
   private busy = false;
+  /** Last model + effort this thread actually ran, reported to a reopening
+   *  browser so its picker shows the truth rather than a stale default. */
+  model: string | null = null;
+  effort: string | null = null;
+  /** Aborts an in-flight manual compaction's app-server child when the chat
+   *  is stopped or the server shuts down, and lets shutdown wait for it. */
+  private compactionAbort: AbortController | null = null;
+  private compactionRun: Promise<void> | null = null;
+  /** Suppresses emits while a stopped session is being torn down. */
+  private silent = false;
+
   private dead = false;
   private currentChild: ChildProcess | null = null;
   /** Set by shutdown() before SIGTERM so the in-flight send()'s close handler
@@ -215,6 +227,15 @@ export class CodexSession {
     if (this.dead) return;
     this.dead = true;
     this.disarmIdleTimer();
+    // A compact in flight must not emit into a dead session (its error/result
+    // would land in the event log after `closed`), and its app-server must be
+    // gone before the next exec resume touches the same rollout.
+    this.silent = true;
+    this.compactionAbort?.abort();
+    if (this.compactionRun) {
+      await this.compactionRun.catch(() => {});
+    }
+    this.silent = false;
     const child = this.currentChild;
     if (child && child.exitCode === null) {
       this.intentionalKill = true;
@@ -239,6 +260,84 @@ export class CodexSession {
     this.listeners.clear();
   }
 
+  /** Manual compact, Codex's own (the same one its TUI runs): a short-lived
+   *  app-server compacts this thread in place, then the next exec resume reads
+   *  the compacted history. Resolves when the turn is fully reported. */
+  async compact(): Promise<void> {
+    if (this.busy) {
+      this.emit({ type: 'error', message: 'codex is still answering — wait for it to finish' });
+      // The caller already sent turnStart (a send from another tab can race
+      // the busy check above), so this turn must end too or the client stays
+      // streaming until someone else's turn finishes.
+      this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
+      return;
+    }
+    if (!this.threadId) {
+      this.emit({ type: 'error', message: 'this chat has no history to compact yet' });
+      this.emit({ type: 'turnEnd', sessionId: undefined });
+      return;
+    }
+    const run = this.runCompaction();
+    this.compactionRun = run;
+    try {
+      await run;
+    } finally {
+      if (this.compactionRun === run) this.compactionRun = null;
+    }
+  }
+
+  private async runCompaction(): Promise<void> {
+    this.busy = true;
+    const abort = new AbortController();
+    this.compactionAbort = abort;
+    this.emitClaudeEvent({ type: '_compact', ts: Date.now() });
+    try {
+      const { postTokens } = await compactCodexThread(this.threadId as string, this.cwd, abort.signal);
+      this.emitClaudeEvent({
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: this.threadId,
+        compact_metadata: {
+          trigger: 'manual',
+          // Codex reports thread-cumulative input rather than the context it
+          // is holding, so a "before" figure from it reads as a fiction
+          // (a two-line chat claiming 131k). Only the size after compaction,
+          // which is the summary itself, is trustworthy.
+          ...(typeof postTokens === 'number' ? { post_tokens: postTokens } : {}),
+        },
+      });
+      this.emitClaudeEvent({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: this.threadId,
+        usage: typeof postTokens === 'number'
+          ? {
+              input_tokens: postTokens,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+              output_tokens: 0,
+            }
+          : undefined,
+      });
+    } catch (e) {
+      this.emit({
+        type: 'error',
+        message: `couldn't compact this chat: ${(e as Error).message}`,
+      });
+      this.emitClaudeEvent({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        session_id: this.threadId,
+      });
+    } finally {
+      this.busy = false;
+      if (this.compactionAbort === abort) this.compactionAbort = null;
+      this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
+    }
+  }
+
   async send(text: string, opts: CodexSendOptions = {}): Promise<void> {
     const images = opts.images;
     if (this.busy) {
@@ -252,6 +351,8 @@ export class CodexSession {
       opts.model,
       opts.effort,
     );
+    this.model = codexModel;
+    this.effort = codexEffort;
     this.busy = true;
     // Echo for reconnect replay (codex's events don't re-emit the user prompt).
     this.emit({
@@ -429,8 +530,9 @@ export class CodexSession {
   // ── private ────────────────────────────────────────────────
 
   private emit(msg: SessionEvent): void {
+    if (this.silent) return;
     this.lastActivityAtMs = Date.now();
-    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg, ts: Date.now() };
     this.eventLog.push(se);
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);
