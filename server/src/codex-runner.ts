@@ -6,6 +6,7 @@ import type { CliKind, SessionEvent, SeqEvent } from './runner.ts';
 import { IDLE_TTL_MS } from './runner.ts';
 import { getPlanMode, getSessionId, setPlanMode, setSessionId } from './sessions.ts';
 import { resolveCodexSelection } from './codex-models.ts';
+import { compactCodexThread } from './codex-app-server.ts';
 import {
   appendEventLog,
   clearEventLog,
@@ -125,6 +126,12 @@ export class CodexSession {
   private subscriberCount = 0;
   private threadId: string | null = null;
   private busy = false;
+  /** Last model + effort this thread actually ran, reported to a reopening
+   *  browser so its picker shows the truth rather than a stale default. */
+  model: string | null = null;
+  effort: string | null = null;
+  /** Context size of the last finished turn, so a compact can show the drop. */
+  private lastContextTokens: number | null = null;
   private dead = false;
   private currentChild: ChildProcess | null = null;
   /** Set by shutdown() before SIGTERM so the in-flight send()'s close handler
@@ -239,6 +246,66 @@ export class CodexSession {
     this.listeners.clear();
   }
 
+  /** Manual compact, Codex's own (the same one its TUI runs): a short-lived
+   *  app-server compacts this thread in place, then the next exec resume reads
+   *  the compacted history. Resolves when the turn is fully reported. */
+  async compact(): Promise<void> {
+    if (this.busy) {
+      this.emit({ type: 'error', message: 'codex is still answering — wait for it to finish' });
+      return;
+    }
+    if (!this.threadId) {
+      this.emit({ type: 'error', message: 'this chat has no history to compact yet' });
+      this.emit({ type: 'turnEnd', sessionId: undefined });
+      return;
+    }
+    this.busy = true;
+    this.emitClaudeEvent({ type: '_compact', ts: Date.now() });
+    try {
+      const { postTokens } = await compactCodexThread(this.threadId, this.cwd);
+      const pre = this.lastContextTokens ?? undefined;
+      this.emitClaudeEvent({
+        type: 'system',
+        subtype: 'compact_boundary',
+        session_id: this.threadId,
+        compact_metadata: {
+          trigger: 'manual',
+          ...(typeof pre === 'number' ? { pre_tokens: pre } : {}),
+          ...(typeof postTokens === 'number' ? { post_tokens: postTokens } : {}),
+        },
+      });
+      if (typeof postTokens === 'number') this.lastContextTokens = postTokens;
+      this.emitClaudeEvent({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        session_id: this.threadId,
+        usage: typeof postTokens === 'number'
+          ? {
+              input_tokens: postTokens,
+              cache_read_input_tokens: 0,
+              cache_creation_input_tokens: 0,
+              output_tokens: 0,
+            }
+          : undefined,
+      });
+    } catch (e) {
+      this.emit({
+        type: 'error',
+        message: `couldn't compact this chat: ${(e as Error).message}`,
+      });
+      this.emitClaudeEvent({
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        session_id: this.threadId,
+      });
+    } finally {
+      this.busy = false;
+      this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
+    }
+  }
+
   async send(text: string, opts: CodexSendOptions = {}): Promise<void> {
     const images = opts.images;
     if (this.busy) {
@@ -252,6 +319,8 @@ export class CodexSession {
       opts.model,
       opts.effort,
     );
+    this.model = codexModel;
+    this.effort = codexEffort;
     this.busy = true;
     // Echo for reconnect replay (codex's events don't re-emit the user prompt).
     this.emit({
@@ -595,6 +664,9 @@ export class CodexSession {
       const cached = Number(u.cached_input_tokens ?? 0);
       const output = Number(u.output_tokens ?? 0);
       const effectiveInput = cached > 0 && cached < input ? input - cached : input;
+      // Full input is the conversation's context size, which is what a
+      // compaction shrinks. Keep it for the divider's "before" figure.
+      this.lastContextTokens = Math.max(0, input);
       state.usage = {
         // Codex reports huge cumulative cache-read counts. For the context
         // meter, show the effective fresh input instead of reconstructing the

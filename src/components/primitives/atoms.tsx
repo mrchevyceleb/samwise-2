@@ -152,19 +152,27 @@ export function ChatDivider({ label, done }: { label: string; done?: boolean }) 
   // compactions must not announce anything.
   return (
     <div
-      style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '20px 0' }}
       aria-live={done ? undefined : 'polite'}
     >
       <span style={{ flex: 1, height: 1, background: 'var(--rule-soft)' }} />
       <span
-        className="sw-folio"
-        style={{
-          fontStyle: 'italic',
-          fontSize: 12,
-          whiteSpace: 'nowrap',
-          color: done ? 'var(--moss)' : 'var(--ink-faint)',
-        }}
+        className={done ? 'sw-compact-chip' : 'sw-folio'}
+        style={
+          done
+            ? undefined
+            : {
+                fontStyle: 'italic',
+                fontSize: 12.5,
+                whiteSpace: 'nowrap',
+                color: 'var(--ember)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+              }
+        }
       >
+        {!done && <span className="sw-compact-dot" aria-hidden />}
         {label}
       </span>
       <span style={{ flex: 1, height: 1, background: 'var(--rule-soft)' }} />

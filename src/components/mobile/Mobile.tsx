@@ -12,7 +12,7 @@ import { BananaModelPicker } from '../primitives/BananaModelPicker';
 import { CodexModelPicker } from '../primitives/CodexModelPicker';
 import { ClaudeModelPicker } from '../primitives/ClaudeModelPicker';
 import { isInteractiveTool } from '../../hooks/useChat';
-import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
+import { commandText, getCommandHints, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
 function timeLabel(ts?: number): string | undefined {
   if (typeof ts !== 'number') return undefined;
@@ -26,15 +26,18 @@ function MobileGrowingInput({
   onSubmit,
   commandPrefix,
   commands,
+  showCompact = false,
 }: {
   value: string;
   onChange: (v: string) => void;
   onSubmit: () => void;
   commandPrefix: string;
   commands: CommandEntry[];
+  showCompact?: boolean;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const suggestion = getCommandSuggestion(value, commandPrefix, commands);
+  const hints = getCommandHints(value, commandPrefix, commands, showCompact);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -57,6 +60,36 @@ function MobileGrowingInput({
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ position: 'relative' }}>
+        {hints.length > 0 && (
+          <div className="sw-cmdhints" role="listbox" aria-label="commands">
+            {hints.map((cmd) => {
+              const shown = commandText(
+                commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix,
+                cmd.name,
+              );
+              return (
+                <button
+                  key={cmd.name}
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  className="sw-cmdhint"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    onChange(shown);
+                    requestAnimationFrame(() => {
+                      ref.current?.focus();
+                      ref.current?.setSelectionRange(shown.length, shown.length);
+                    });
+                  }}
+                >
+                  <span className="sw-cmdhint-name">{shown}</span>
+                  {cmd.description && <span className="sw-cmdhint-desc">{cmd.description}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {suggestion && (
           <div
             aria-hidden
@@ -229,6 +262,18 @@ export function MobileThreshold({
   const effectiveRepo = companion === 'assistant' ? liveAssistantHub : selectedRepo ?? defaultRepo;
   const selectedRepoPath = effectiveRepo?.path;
 
+  // Typing filters the shelves, the same as on the desktop, so the repo a
+  // name points at is visible and tappable before anything is sent.
+  const shownRepos = (() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return regularRepos;
+    return regularRepos.filter((r) =>
+      r.name.toLowerCase().includes(q) ||
+      r.path.toLowerCase().includes(q) ||
+      (r.hub ?? '').toLowerCase().includes(q),
+    );
+  })();
+
   // Morph assistant + non-default engine into that engine's cli at boundary.
   // Codex/Banana use the client-supplied cwd, so we only morph once the live
   // hub repo has loaded (otherwise the mock fallback path could spawn the
@@ -249,8 +294,13 @@ export function MobileThreshold({
         minHeight: 0,
         overflowY: 'auto',
         WebkitOverflowScrolling: 'touch',
+        position: 'relative',
       }}
     >
+      <div aria-hidden className="sw-floaters">
+        <span className="sw-blob sw-blob-a" />
+        <span className="sw-blob sw-blob-b" />
+      </div>
     <div
       style={{
         display: 'flex',
@@ -259,6 +309,7 @@ export function MobileThreshold({
         padding: '32px 22px 24px',
         minHeight: '100%',
         position: 'relative',
+        zIndex: 1,
       }}
     >
       {onToggleTheme && (
@@ -287,6 +338,7 @@ export function MobileThreshold({
         </button>
       )}
       <div
+        className="sw-breathe"
         style={{
           padding: 5,
           background: 'var(--vellum)',
@@ -499,9 +551,11 @@ export function MobileThreshold({
             // repo until the list lands, and a repo-less thread cannot send.
             if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
             const text = query.trim();
-            // A name typed with no repo chosen is a repo pick, not a message.
-            // Opening a thread with no repo leaves the prompt unable to send.
-            if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
+            // A typed repo name is always a repo pick, whatever is selected:
+            // an exact name first ("operly" beside "operly-support"), then an
+            // unambiguous single match. It can never land as a message in a
+            // thread the user did not choose.
+            if (effectiveCompanion !== 'assistant') {
               const q = text.toLowerCase();
               const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
               const loose = regularRepos.filter((r) => r.name.toLowerCase().includes(q));
@@ -513,8 +567,12 @@ export function MobileThreshold({
                 onSetForth({ companion: effectiveCompanion, repo: pick });
                 return;
               }
-              setPaletteHint('pick a repo below first, then speak');
-              return;
+              if (!effectiveRepo) {
+                // Nothing selected and nothing matched: keep the text on the
+                // threshold rather than opening a thread that cannot send.
+                setPaletteHint('pick a repo below first, then speak');
+                return;
+              }
             }
             setQuery('');
             setPaletteHint(null);
@@ -552,6 +610,26 @@ export function MobileThreshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
+          {companion !== 'assistant' && effectiveRepo && (
+            <span
+              className="sw-mono sw-dest"
+              title={`what you type sets forth into ${effectiveRepo.name}`}
+              style={{
+                fontSize: 10.5,
+                color: 'var(--ember)',
+                border: '1px solid var(--rule-soft)',
+                borderRadius: 999,
+                padding: '3px 8px',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                maxWidth: 118,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              → {effectiveRepo.name}
+            </span>
+          )}
         </form>
         {paletteHint && (
           <div
@@ -667,8 +745,19 @@ export function MobileThreshold({
           ) : (
             <>
               {(() => {
-                const starred = regularRepos.filter((r) => r.starred);
-                const rest = regularRepos.filter((r) => !r.starred);
+                const starred = shownRepos.filter((r) => r.starred);
+                const rest = shownRepos.filter((r) => !r.starred);
+                if (query.trim() && shownRepos.length === 0) {
+                  return (
+                    <div
+                      className="sw-folio"
+                      style={{ padding: '6px 4px', fontStyle: 'italic' }}
+                    >
+                      no repo called "{query.trim()}" — the words go to{' '}
+                      {effectiveRepo?.name ?? 'your chat'}
+                    </div>
+                  );
+                }
                 return (
                   <>
                     {starred.length > 0 && (
@@ -1157,7 +1246,9 @@ export function MobileConversation({
           minHeight: 0,
           overflowY: 'auto',
           overflowX: 'hidden',
-          padding: '22px 22px 12px',
+          // The chronicle FAB (Sam's portrait) floats over the last lines;
+          // this keeps the final reply readable behind it.
+          padding: '22px 22px 96px',
           background: 'var(--vellum)',
         }}
       >
@@ -1292,7 +1383,7 @@ export function MobileConversation({
           </div>
         )}
         {modelPicker === 'codex' && onModelChange && onEffortChange && model && effort && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <CodexModelPicker
               model={model}
               effort={effort}
@@ -1301,6 +1392,9 @@ export function MobileConversation({
               onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
             />
+            {onCompact && (
+              <CompactPill onClick={() => onCompact()} disabled={status === 'streaming' || compactBusy} />
+            )}
           </div>
         )}
         {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
@@ -1416,6 +1510,7 @@ export function MobileConversation({
             onSubmit={submit}
             commandPrefix={commandPrefix}
             commands={commands}
+            showCompact={!!onCompact}
           />
           {(() => {
             const hasText = draft.trim().length > 0 || pendingImages.length > 0;
@@ -1751,6 +1846,7 @@ function PCompanion({
 }: { name: string; selected?: boolean; onSelect?: () => void }) {
   return (
     <div
+      className="sw-companion-card"
       onClick={onSelect}
       style={{
         flex: 1,

@@ -3,7 +3,11 @@ import type { ReactNode } from 'react';
 import { SamPortrait } from './atoms';
 import { CompactPill } from './PickerPill';
 import type { CommandEntry } from '../../data/types';
-import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
+import {
+  commandText,
+  getCommandHints,
+  getCommandSuggestion,
+} from '../../utils/commandAutocomplete';
 
 // ─────────────────────────────────────────────
 // Sam's message bubble — vellum, left-aligned, with avatar
@@ -786,6 +790,7 @@ export function ChatInput({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [images, setImages] = useState<ChatImage[]>([]);
   const suggestion = getCommandSuggestion(v, commandPrefix, commands);
+  const commandHints = getCommandHints(v, commandPrefix, commands, !!onCompact);
 
   // Auto-grow with content. Reset to auto so scrollHeight reflects natural
   // content size, then size to that, capped by computed max-height. Toggle
@@ -1021,6 +1026,33 @@ export function ChatInput({
         </div>
       )}
       <div style={{ position: 'relative' }}>
+        {commandHints.length > 0 && (
+          <div className="sw-cmdhints" role="listbox" aria-label="commands">
+            {commandHints.map((cmd) => (
+              <button
+                key={cmd.name}
+                type="button"
+                role="option"
+                aria-selected={false}
+                className="sw-cmdhint"
+                onMouseDown={(e) => {
+                  // Keep focus in the composer; the click only fills the name.
+                  e.preventDefault();
+                  setV(commandText(commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix, cmd.name));
+                  requestAnimationFrame(() => {
+                    taRef.current?.focus();
+                    taRef.current?.setSelectionRange(taRef.current.value.length, taRef.current.value.length);
+                  });
+                }}
+              >
+                <span className="sw-cmdhint-name">
+                  {commandText(commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix, cmd.name)}
+                </span>
+                {cmd.description && <span className="sw-cmdhint-desc">{cmd.description}</span>}
+              </button>
+            ))}
+          </div>
+        )}
         {suggestion && (
           <div
             aria-hidden

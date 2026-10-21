@@ -91,8 +91,8 @@ function reduce(
     const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : undefined;
     const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined;
     const label = pre !== undefined && post !== undefined
-      ? `compacted · ${shortTokens(pre)} → ${shortTokens(post)} tokens`
-      : 'conversation compacted';
+      ? `compacted its memory · ${shortTokens(pre)} → ${shortTokens(post)} tokens`
+      : 'compacted its memory';
     // Only the compact of THIS turn may be relabelled: an auto-compact can
     // land while an older, failed marker is still pending further up.
     const idx = blocks.reduce(
@@ -1025,9 +1025,9 @@ export function useChat(opts: {
    *  (the CLI supports "/compact keep the API notes"). */
   const compact = (instructions?: string) => {
     if (!repo) return;
-    // Only the Claude runner has an in-session /compact. Codex and Banana
-    // reaches here only through a stale prop; refuse rather than round-trip.
-    if (cli !== 'claude' && cli !== 'assistant') return;
+    // Claude compacts in-session, Codex through its app server. Banana has no
+    // equivalent; it only reaches here through a stale prop, so refuse.
+    if (cli !== 'claude' && cli !== 'assistant' && cli !== 'codex') return;
     const ws = wsRef.current;
     // A second click while the first is still in flight would come back as
     // "Sam is mid-turn", which reads as an error the user didn't cause.

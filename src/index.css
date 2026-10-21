@@ -99,3 +99,146 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .sw-picker-pill, .sw-picker-pop, .sw-picker-opt { transition: none; animation: none; }
 }
+
+/* ── Command hints (typing "/" or "$") ─────────────────────────────────────
+   A small shelf of what can be typed, so /compact is discoverable instead of
+   folklore. Springs up from the composer like the picker menus. */
+.sw-cmdhints {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  background: var(--vellum);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(74, 50, 24, 0.18);
+  overflow: hidden;
+  animation: sw-picker-in-up 170ms cubic-bezier(.34,1.56,.64,1);
+  transform-origin: bottom left;
+}
+.sw-cmdhint {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--rule-soft);
+  padding: 9px 12px;
+  cursor: pointer;
+  transition: background 120ms ease, transform 120ms ease;
+}
+.sw-cmdhint:last-child { border-bottom: 0; }
+.sw-cmdhint:hover { background: rgba(184, 89, 58, 0.08); transform: translateX(2px); }
+.sw-cmdhint-name { font-family: var(--mono, ui-monospace, monospace); font-size: 13px; color: var(--ink); }
+.sw-cmdhint-desc { font-size: 12.5px; color: var(--ink-faint); font-style: italic; }
+
+/* ── The toy layer ─────────────────────────────────────────────────────────
+   Everything worth touching lifts, presses and springs. The threshold carries
+   slow drifting light and a breathing portrait so the room is never still. */
+.sw-btn {
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    transform 150ms cubic-bezier(.34,1.56,.64,1),
+    box-shadow 150ms ease;
+}
+.sw-btn:hover:not(:disabled) { transform: translateY(-1px) scale(1.03); box-shadow: 0 5px 14px rgba(74, 50, 24, 0.14); }
+.sw-btn:active:not(:disabled) { transform: translateY(0) scale(0.96); box-shadow: none; }
+.sw-companion-card {
+  transition:
+    transform 170ms cubic-bezier(.34,1.56,.64,1),
+    box-shadow 170ms ease,
+    border-color 170ms ease;
+}
+.sw-companion-card:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 10px 24px rgba(74, 50, 24, 0.14); }
+.sw-companion-card:active { transform: translateY(0) scale(0.98); }
+.sw-dest { transition: border-color 150ms ease, color 150ms ease, transform 150ms ease; }
+.sw-dest:hover { border-color: rgba(184, 89, 58, 0.55); transform: translateY(-1px); }
+.sw-breathe { animation: sw-breathe 6.5s ease-in-out infinite; }
+@keyframes sw-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.022); }
+}
+.sw-floaters { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.sw-blob {
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(28px);
+  opacity: 0.55;
+  will-change: transform;
+}
+.sw-blob-a {
+  left: -120px;
+  top: 8%;
+  background: radial-gradient(circle, rgba(184, 89, 58, 0.10), transparent 65%);
+  animation: sw-drift-a 22s ease-in-out infinite alternate;
+}
+.sw-blob-b {
+  right: -140px;
+  bottom: 5%;
+  background: radial-gradient(circle, rgba(164, 129, 66, 0.12), transparent 65%);
+  animation: sw-drift-b 28s ease-in-out infinite alternate;
+}
+@keyframes sw-drift-a {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(60px, 40px, 0) scale(1.12); }
+}
+@keyframes sw-drift-b {
+  from { transform: translate3d(0, 0, 0) scale(1.05); }
+  to { transform: translate3d(-50px, -30px, 0) scale(0.95); }
+}
+.sw-ticker {
+  overflow: hidden;
+  white-space: nowrap;
+  border-top: 1px dashed var(--rule-soft);
+  border-bottom: 1px dashed var(--rule-soft);
+  padding: 6px 0;
+}
+.sw-ticker-track {
+  display: inline-block;
+  padding-left: 100%;
+  animation: sw-ticker 38s linear infinite;
+}
+.sw-ticker:hover .sw-ticker-track { animation-play-state: paused; }
+@keyframes sw-ticker {
+  from { transform: translateX(0); }
+  to { transform: translateX(-100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sw-companion-card, .sw-btn, .sw-dest, .sw-cmdhint { transition: none; }
+  .sw-breathe, .sw-blob-a, .sw-blob-b, .sw-ticker-track { animation: none; }
+  .sw-cmdhints { animation: none; }
+}
+
+/* A finished compaction is a small keepsake chip, not a whisper. */
+.sw-compact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--ink-soft);
+  background: rgba(107, 124, 78, 0.10);
+  border: 1px solid rgba(107, 124, 78, 0.28);
+  border-radius: 999px;
+  padding: 3px 11px;
+  animation: sw-picker-in 220ms cubic-bezier(.34,1.56,.64,1);
+}
+.sw-compact-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ember);
+  animation: sw-pulse 1.4s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sw-compact-chip { animation: none; }
+  .sw-compact-dot { animation: none; }
+}

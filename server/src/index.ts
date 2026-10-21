@@ -30,6 +30,7 @@ import {
   shutdownAllCodexSessions,
   activeCodexSessions,
   pruneIdleCodexSessions,
+  type CodexSession,
 } from './codex-runner.ts';
 import {
   shutdownAllBananaSessions,
@@ -754,10 +755,10 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'compact') {
       console.log(`[ws#${wsId}] compact cli=${cliKind} busy=${busy} session=${activeSessionKey ?? 'none'}`);
-      // Manual compact. Only the persistent Claude runner has an in-session
-      // /compact; codex/banana are spawn-per-turn and compact differently.
-      if (cliKind !== 'claude' && cliKind !== 'assistant') {
-        safeSend({ type: 'error', message: 'compacting is only available on Claude chats' });
+      // Manual compact. Claude runs its own in-session /compact; Codex runs the
+      // TUI's compaction through its app server. Banana has no equivalent.
+      if (cliKind !== 'claude' && cliKind !== 'assistant' && cliKind !== 'codex') {
+        safeSend({ type: 'error', message: 'this companion cannot compact a chat' });
         return;
       }
       if (busy) {
@@ -789,7 +790,7 @@ wss.on('connection', (ws, req) => {
         // Another tab or device can be mid-turn on this warm session, which
         // this socket's `busy` flag would never know. Writing /compact into
         // the shared stdin then would land inside their turn.
-        if ((session as ClaudeSession).isBusy()) {
+        if ((session as { isBusy?: () => boolean }).isBusy?.() === true) {
           console.log(`[ws#${wsId}] compact rejected: session busy`);
           safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
           return;
@@ -799,7 +800,11 @@ wss.on('connection', (ws, req) => {
         // summary is written by the model the user chose. `busy` is set only
         // AFTER the bind: a superseded bind returns early, and setting it
         // before would leave this socket permanently "mid-turn".
-        if (typeof msg.model === 'string' && cliKind && repoPath) {
+        if (
+          (cliKind === 'claude' || cliKind === 'assistant') &&
+          typeof msg.model === 'string' &&
+          repoPath
+        ) {
           const desired = resolveClaudeSelection(msg.model, msg.effort);
           const warm = session as ClaudeSession;
           if (warm.model !== desired.model || warm.effort !== desired.effort) {
@@ -823,7 +828,11 @@ wss.on('connection', (ws, req) => {
           sessionId: session.sessionId(),
           chatId,
         });
-        (session as ClaudeSession).compact(msg.instructions);
+        if (cliKind === 'codex') {
+          void (session as CodexSession).compact();
+        } else {
+          (session as ClaudeSession).compact(msg.instructions);
+        }
       } catch (e) {
         busy = false;
         safeSend({ type: 'error', message: String((e as Error).message) });

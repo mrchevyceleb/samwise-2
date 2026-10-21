@@ -30,6 +30,7 @@ import {
   writeSessionClaudeSelection,
   writeStoredClaudeSelection,
 } from './components/primitives/claudeModels';
+import { readChatPick, writeChatPick } from './data/modelMemory';
 import { useLive } from './hooks/useLive';
 import { useLiveBranch } from './hooks/useLiveBranch';
 import { useTheme } from './hooks/useTheme';
@@ -209,21 +210,25 @@ export default function App() {
   const [codexEffort, setCodexEffort] = useState<string>(
     () => readStoredCodexEffort(codexModel),
   );
+  /** True once the picker is touched in this view. A late first `ready` must
+   *  never adopt over a pick the user just made. */
+  const userPickedRef = useRef(false);
   const changeCodexModel = (value: string) => {
+    userPickedRef.current = true;
     const model = normalizeCodexModel(value);
     const effort = normalizeCodexEffort(model, codexEffort);
     setCodexModel(model);
     setCodexEffort(effort);
     writeStoredCodexSelection(model, effort);
+    writeChatPick('codex', repo?.path, chatId, model, effort);
   };
   const changeCodexEffort = (value: string) => {
+    userPickedRef.current = true;
     const effort = normalizeCodexEffort(codexModel, value);
     setCodexEffort(effort);
     writeStoredCodexSelection(codexModel, effort);
+    writeChatPick('codex', repo?.path, chatId, codexModel, effort);
   };
-  /** True once the picker is touched in this view. A late first `ready` must
-   *  never adopt over a pick the user just made. */
-  const userPickedRef = useRef(false);
   const [claudeModel, setClaudeModel] = useState<string>(readStoredClaudeModel);
   const [claudeEffort, setClaudeEffort] = useState<string>(
     () => readStoredClaudeEffort(claudeModel),
@@ -235,12 +240,14 @@ export default function App() {
     setClaudeModel(model);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(model, effort);
+    writeChatPick('claude', repo?.path, chatId, model, effort);
   };
   const changeClaudeEffort = (value: string) => {
     userPickedRef.current = true;
     const effort = normalizeClaudeEffort(claudeModel, value);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(claudeModel, effort);
+    writeChatPick('claude', repo?.path, chatId, claudeModel, effort);
   };
   const [assistantEngine, setAssistantEngineState] = useState<AssistantEngine>(readAssistantEngine);
   const setAssistantEngine = (e: AssistantEngine) => {
@@ -270,6 +277,17 @@ export default function App() {
     // the session's model instead of a stale stored default (that recycle
     // would otherwise drag the session back to the default).
     onSessionSelection: (sessionModel, sessionEffort) => {
+      if (companion === 'codex') {
+        const nextModel = normalizeCodexModel(sessionModel);
+        const nextEffort = normalizeCodexEffort(nextModel, sessionEffort);
+        // A pick made in this view, or one remembered for this chat, outranks
+        // anything the session reports: the next send carries it.
+        if (userPickedRef.current || readChatPick('codex', repo?.path, chatId)) return null;
+        setCodexModel(nextModel);
+        setCodexEffort(nextEffort);
+        writeStoredCodexSelection(nextModel, nextEffort);
+        return { model: nextModel, effort: nextEffort };
+      }
       if (companion !== 'claude' && companion !== 'assistant') return null;
       const nextModel = normalizeClaudeModel(sessionModel);
       const nextEffort = normalizeClaudeEffort(nextModel, sessionEffort);
@@ -286,6 +304,9 @@ export default function App() {
         }
         return null;
       }
+      // This chat has a pick of its own (made here, possibly never sent yet).
+      // Keep showing it; the next send recycles the session onto it.
+      if (readChatPick('claude', repo?.path, chatId)) return null;
       const explicitPick = !!mirror.model
         && (mirror.model !== storedModel || mirror.effort !== storedEffort);
       if (explicitPick) {
@@ -304,6 +325,26 @@ export default function App() {
       return { model: nextModel, effort: nextEffort };
     },
   });
+
+  // Restore the picker to this chat's own pick the moment the chat changes.
+  // The global keys are the fallback for a chat that has never had one, so a
+  // change made on another device (or in another chat) does not leak in.
+  useEffect(() => {
+    userPickedRef.current = false;
+    if (!repo?.path) return;
+    const pick = readChatPick(companion, repo.path, chatId);
+    if (!pick) return;
+    userPickedRef.current = true;
+    if (companion === 'codex') {
+      const model = normalizeCodexModel(pick.model);
+      setCodexModel(model);
+      setCodexEffort(normalizeCodexEffort(model, pick.effort));
+    } else if (companion === 'claude' || companion === 'assistant') {
+      const model = normalizeClaudeModel(pick.model);
+      setClaudeModel(model);
+      setClaudeEffort(normalizeClaudeEffort(model, pick.effort));
+    }
+  }, [companion, repo?.path, chatId]);
 
   // Once repos load, bind the restore-target path to a real Repo object.
   useEffect(() => {
@@ -344,7 +385,16 @@ export default function App() {
   useEffect(() => {
     const firstUser = chat.blocks.find((b) => b.kind === 'user');
     if (firstUser && firstUser.kind === 'user') {
-      const t = firstUser.text.trim().split('\n')[0].slice(0, 60);
+      // Cut on a word, not mid-word: a title that ends "…colour is teal. Re"
+      // looks broken in the header.
+      const oneLine = firstUser.text.trim().split('\n')[0].replace(/\s+/g, ' ');
+      const t = (() => {
+        if (oneLine.length <= 46) return oneLine;
+        const head = oneLine.slice(0, 46);
+        const at = head.lastIndexOf(' ');
+        const kept = (at > 12 ? head.slice(0, at) : head).replace(/[\s,;:.!?]+$/, '');
+        return `${kept}…`;
+      })();
       if (t) setErrandTitle(t);
     } else if (view === 'conversation' && chat.blocks.length === 0) {
       setErrandTitle('a fresh errand');
@@ -611,7 +661,7 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
-            onCompact={companion === 'claude' || companion === 'assistant' ? chat.compact : undefined}
+            onCompact={companion === 'claude' || companion === 'assistant' || companion === 'codex' ? chat.compact : undefined}
             compactBusy={chat.compacting}
           />
         )}
@@ -705,7 +755,7 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
-            onCompact={companion === 'claude' || companion === 'assistant' ? chat.compact : undefined}
+            onCompact={companion === 'claude' || companion === 'assistant' || companion === 'codex' ? chat.compact : undefined}
             compactBusy={chat.compacting}
           />
         )}

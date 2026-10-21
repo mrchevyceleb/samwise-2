@@ -99,6 +99,19 @@ export function Threshold({
       ? assistantEngine
       : companion;
 
+  /** The repo a typed name points at, if any. An exact name always wins, even
+   *  when a dozen other repos contain it as a substring ("operly" beside
+   *  "operly-support"); otherwise only an unambiguous single match counts.
+   *  Returns undefined when the text is a message, not a repo name. */
+  const typedRepo = (text: string): Repo | undefined => {
+    const q = text.trim().toLowerCase();
+    if (!q) return undefined;
+    const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
+    if (exact) return exact;
+    const loose = regularRepos.filter((r) => r.name.toLowerCase().includes(q));
+    return loose.length === 1 ? loose[0] : undefined;
+  };
+
   const setForth = (initialMessage?: string) => {
     // The repo list has not landed yet, so nothing can be resolved from what
     // was typed. Opening now would land in a thread with no repo, where the
@@ -107,10 +120,7 @@ export function Threshold({
     if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
     if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
       // A name typed with no repo chosen is a repo pick, not a message.
-      const q = (query.trim() || initialMessage || '').toLowerCase();
-      const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
-      const loose = q ? regularRepos.filter((r) => r.name.toLowerCase().includes(q)) : [];
-      const pick = exact ?? (loose.length === 1 ? loose[0] : undefined);
+      const pick = typedRepo(query.trim() || initialMessage || '');
       if (pick) {
         setSelectedRepo(pick);
         setQuery('');
@@ -129,17 +139,19 @@ export function Threshold({
     if (e.key !== 'Enter' || !query.trim()) return;
     if (settingForth) return;
     e.preventDefault();
-    // If exactly one repo matches, treat the typed text as a repo selector and
-    // just set forth without a message. Otherwise treat it as the first message.
-    if (
-      companion !== 'assistant' &&
-      filteredRepos.length === 1 &&
-      query.trim() === filteredRepos[0].name
-    ) {
-      setSelectedRepo(filteredRepos[0]);
-      setQuery('');
-      onSetForth({ companion: effectiveCompanion, repo: filteredRepos[0] });
-      return;
+    // A typed repo name is always a repo pick, whatever is highlighted, so a
+    // name can never land as a message in someone else's thread. Anything
+    // else is the first message, and the destination chip beside the search
+    // box says which repo it goes to.
+    if (companion !== 'assistant') {
+      const pick = typedRepo(query);
+      if (pick) {
+        setSelectedRepo(pick);
+        setQuery('');
+        setHint(null);
+        onSetForth({ companion: effectiveCompanion, repo: pick });
+        return;
+      }
     }
     setForth(query.trim());
     setQuery('');
@@ -151,10 +163,17 @@ export function Threshold({
         flex: 1,
         minHeight: 0,
         overflowY: 'auto',
+        position: 'relative',
       }}
     >
+      <div aria-hidden className="sw-floaters">
+        <span className="sw-blob sw-blob-a" />
+        <span className="sw-blob sw-blob-b" />
+      </div>
     <div
       style={{
+        position: 'relative',
+        zIndex: 1,
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
@@ -164,6 +183,7 @@ export function Threshold({
     >
       {/* Sam himself + title block */}
       <div
+        className="sw-breathe"
         style={{
           padding: 7,
           background: 'var(--vellum)',
@@ -259,6 +279,26 @@ export function Threshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
+          {companion !== 'assistant' && effectiveRepo && (
+            <span
+              className="sw-mono sw-dest"
+              title={`what you type sets forth into ${effectiveRepo.name}`}
+              style={{
+                fontSize: 12,
+                color: 'var(--ember)',
+                border: '1px solid var(--rule-soft)',
+                borderRadius: 999,
+                padding: '3px 10px',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                maxWidth: 220,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              → {effectiveRepo.name}
+            </span>
+          )}
           <span className="sw-folio">⌘K</span>
         </div>
 
@@ -492,6 +532,16 @@ export function Threshold({
             {settingForth ? 'Setting forth…' : 'Set forth'}
           </button>
         </div>
+        <div className="sw-ticker" aria-hidden>
+          <span className="sw-ticker-track sw-folio" style={{ fontStyle: 'italic', fontSize: 11.5 }}>
+            {Array.from({ length: 2 }).map((_, i) => (
+              <span key={i}>
+                {' '}say a repo's name to set forth · /compact keeps a long chat light ·
+                {' '}⌘K switches companion · ✦ ·{' '}
+              </span>
+            ))}
+          </span>
+        </div>
       </div>
 
       {/* Hubs strip */}
@@ -592,6 +642,7 @@ function CompanionPick({
 }: { name: string; sub: string; selected?: boolean; onSelect?: () => void }) {
   return (
     <div
+      className="sw-companion-card"
       onClick={onSelect}
       style={{
         flex: 1,
