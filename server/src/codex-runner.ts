@@ -698,7 +698,10 @@ export class CodexSession {
       const cached = Number(u.cached_input_tokens ?? 0);
       const output = Number(u.output_tokens ?? 0);
       const effectiveInput = cached > 0 && cached < input ? input - cached : input;
-      this.lastTurnInputTokens = Math.max(0, effectiveInput);
+      // The fallback "before" figure is the context the model actually saw,
+      // not the fresh (uncached) part: fresh input can be smaller than the
+      // compacted result and produce an impossible 2k -> 30k chip.
+      this.lastTurnInputTokens = Math.max(0, input);
       state.usage = {
         // Codex reports huge cumulative cache-read counts. For the context
         // meter, show the effective fresh input instead of reconstructing the

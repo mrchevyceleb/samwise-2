@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { SamPortrait, SearchGlyph } from '../primitives/atoms';
 import {
   COMPANIONS,
@@ -66,6 +66,11 @@ export function Threshold({
     initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
   );
   const [query, setQuery] = useState(initialQuery ?? '');
+  // A prompt handed back while the threshold stayed mounted (a held set-forth
+  // that found no repo) must appear in the box, not just in the initial state.
+  useEffect(() => {
+    if (initialQuery) setQuery(initialQuery);
+  }, [initialQuery]);
   /** Warm nudge when a set-forth has nowhere to work yet. */
   const [hint, setHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];

@@ -250,6 +250,9 @@ export function MobileThreshold({
     initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
   );
   const [query, setQuery] = useState(initialQuery ?? '');
+  useEffect(() => {
+    if (initialQuery) setQuery(initialQuery);
+  }, [initialQuery]);
   /** Warm nudge when the palette was used with nowhere to work yet. */
   const [paletteHint, setPaletteHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
@@ -295,6 +298,10 @@ export function MobileThreshold({
     if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
     const text = query.trim();
     if (!text) {
+      if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
+        setPaletteHint('pick a repo below first, then speak');
+        return;
+      }
       onSetForth({ companion: effectiveCompanion, repo: effectiveRepo });
       return;
     }
