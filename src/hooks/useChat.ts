@@ -345,6 +345,14 @@ export function useChat(opts: {
   // read the latest value without re-subscribing every render.
   const initialMessageRef = useRef<string | null>(initialMessage ?? null);
   const initialSendInFlightRef = useRef(false);
+  /** The pending first message already handed to the socket. A `ready` frame
+   *  can send it before the effect below ever observes `ready`, and the effect
+   *  re-runs on every status/model change, so both paths check this to keep
+   *  one threshold-entered prompt to exactly one send. */
+  const initialSentForRef = useRef<string | null>(null);
+  /** The value the in-flight flags belong to. A NEW prompt clears them; a
+   *  re-render of the same prompt must not. */
+  const initialSeenRef = useRef<string | null>(initialMessage ?? null);
   const onInitialMessageSentRef = useRef(onInitialMessageSent);
   onInitialMessageSentRef.current = onInitialMessageSent;
   /** Latest event seq received from server. Sent on reconnect for replay. */
@@ -365,17 +373,24 @@ export function useChat(opts: {
 
   useEffect(() => {
     if (initialMessage) {
+      if (initialSeenRef.current !== initialMessage) {
+        initialSeenRef.current = initialMessage;
+        initialSentForRef.current = null;
+        initialSendInFlightRef.current = false;
+      }
       initialMessageRef.current = initialMessage;
-      initialSendInFlightRef.current = false;
+      if (initialSentForRef.current === initialMessage) return;
       const ws = wsRef.current;
       if (
         repo &&
         ws &&
         ws.readyState === WebSocket.OPEN &&
+        !initialSendInFlightRef.current &&
         (status === 'ready' || status === 'idle')
       ) {
         const expectedKey = conversationKey(cli, repo.path, chatId);
         initialSendInFlightRef.current = true;
+        initialSentForRef.current = initialMessage;
         setChat((prev) => {
           if (prev.key !== expectedKey) return prev;
           const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
@@ -393,6 +408,8 @@ export function useChat(opts: {
       }
     } else if (!initialSendInFlightRef.current) {
       initialMessageRef.current = null;
+      initialSentForRef.current = null;
+      initialSeenRef.current = null;
     }
   }, [chatId, cli, initialMessage, modelField, repo, status]);
 
@@ -537,8 +554,9 @@ export function useChat(opts: {
           // confirms the server accepted it, so startup reconnects do not lose
           // threshold-entered prompts.
           const pending = initialMessageRef.current;
-          if (pending && !initialSendInFlightRef.current && ws.readyState === WebSocket.OPEN) {
+          if (pending && !initialSendInFlightRef.current && !initialSentForRef.current && ws.readyState === WebSocket.OPEN) {
             initialSendInFlightRef.current = true;
+            initialSentForRef.current = pending;
             setChat((prev) => {
               if (prev.key !== expectedKey) return prev;
               const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
@@ -571,6 +589,7 @@ export function useChat(opts: {
           if (initialSendInFlightRef.current) {
             initialSendInFlightRef.current = false;
             initialMessageRef.current = null;
+            initialSentForRef.current = null;
             onInitialMessageSentRef.current?.();
           }
           pendingSendRef.current = false;
