@@ -221,11 +221,15 @@ export default function App() {
     setCodexEffort(effort);
     writeStoredCodexSelection(codexModel, effort);
   };
+  /** True once the picker is touched in this view. A late first `ready` must
+   *  never adopt over a pick the user just made. */
+  const userPickedRef = useRef(false);
   const [claudeModel, setClaudeModel] = useState<string>(readStoredClaudeModel);
   const [claudeEffort, setClaudeEffort] = useState<string>(
     () => readStoredClaudeEffort(claudeModel),
   );
   const changeClaudeModel = (value: string) => {
+    userPickedRef.current = true;
     const model = normalizeClaudeModel(value);
     const effort = normalizeClaudeEffort(model, claudeEffort);
     setClaudeModel(model);
@@ -233,6 +237,7 @@ export default function App() {
     writeStoredClaudeSelection(model, effort);
   };
   const changeClaudeEffort = (value: string) => {
+    userPickedRef.current = true;
     const effort = normalizeClaudeEffort(claudeModel, value);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(claudeModel, effort);
@@ -271,6 +276,16 @@ export default function App() {
       const mirror = readSessionClaudeSelection();
       const storedModel = readStoredClaudeModel();
       const storedEffort = readStoredClaudeEffort(storedModel);
+      // A pick made in THIS view outranks anything the session reports: the
+      // next send recycles the session to it. A late first `ready` racing a
+      // fast pick used to overwrite the picker (and the compact that followed
+      // went out at the old model).
+      if (userPickedRef.current) {
+        if (nextModel === storedModel && nextEffort === storedEffort) {
+          writeSessionClaudeSelection(nextModel, nextEffort);
+        }
+        return null;
+      }
       const explicitPick = !!mirror.model
         && (mirror.model !== storedModel || mirror.effort !== storedEffort);
       if (explicitPick) {

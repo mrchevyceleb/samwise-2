@@ -753,6 +753,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'compact') {
+      console.log(`[ws#${wsId}] compact cli=${cliKind} busy=${busy} session=${activeSessionKey ?? 'none'}`);
       // Manual compact. Only the persistent Claude runner has an in-session
       // /compact; codex/banana are spawn-per-turn and compact differently.
       if (cliKind !== 'claude' && cliKind !== 'assistant') {
@@ -760,6 +761,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       if (busy) {
+        console.log(`[ws#${wsId}] compact rejected: socket busy`);
         safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
         return;
       }
@@ -788,6 +790,7 @@ wss.on('connection', (ws, req) => {
         // this socket's `busy` flag would never know. Writing /compact into
         // the shared stdin then would land inside their turn.
         if ((session as ClaudeSession).isBusy()) {
+          console.log(`[ws#${wsId}] compact rejected: session busy`);
           safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
           return;
         }

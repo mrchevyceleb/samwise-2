@@ -404,6 +404,9 @@ export function useChat(opts: {
   // silence while it writes the summary.
   const [compacting, setCompacting] = useState(false);
   const compactingRef = useRef(false);
+  /** Set once the server answered a compact with turnStart. Until then an
+   *  error can mean the compact never started, so the latch may open. */
+  const compactConfirmedRef = useRef(false);
   const windowTokensRef = useRef(defaultWindowForCli(cli, model));
   /** Server-confirmed plan-mode flag. Updated on `ready` and `planModeChanged`.
    *  `null` means the server hasn't told us yet. */
@@ -661,6 +664,7 @@ export function useChat(opts: {
           setStatus(msg.busy ? 'streaming' : 'ready');
           if (!msg.busy && compactingRef.current) {
             compactingRef.current = false;
+            compactConfirmedRef.current = false;
             setCompacting(false);
           }
           if (typeof msg.planMode === 'boolean') setPlanModeState(msg.planMode);
@@ -748,11 +752,9 @@ export function useChat(opts: {
             onInitialMessageSentRef.current?.();
           }
           pendingSendRef.current = false;
-        // A compact asked for on this socket died with it (the server may
-        // never have read the frame). Let the pill work again.
-        compactingRef.current = false;
-        setCompacting(false);
           pendingActionRef.current = false;
+          // A compact sent on this socket is now owned by the server.
+          if (compactingRef.current) compactConfirmedRef.current = true;
           setError(null);
           setStatus('streaming');
         }
@@ -760,6 +762,7 @@ export function useChat(opts: {
           pendingSendRef.current = false;
           pendingActionRef.current = false;
           compactingRef.current = false;
+          compactConfirmedRef.current = false;
           setCompacting(false);
           setStatus('ready');
         }
@@ -871,10 +874,13 @@ export function useChat(opts: {
         }
         else if (msg.type === 'error') {
           // A rejected compact (busy, no session, wrong engine) answers with
-          // an error and no turnEnd. Clear the latch so the pill can be used
-          // again and the watchdog returns to its normal window.
-          compactingRef.current = false;
-          setCompacting(false);
+          // an error and no turnStart. Clear the latch then, but never in the
+          // middle of a confirmed compaction: the runner can forward an error
+          // while its turn keeps going.
+          if (!compactConfirmedRef.current) {
+            compactingRef.current = false;
+            setCompacting(false);
+          }
           const inFlight =
             statusRef.current === 'streaming' ||
             statusRef.current === 'connecting' ||
@@ -902,6 +908,11 @@ export function useChat(opts: {
           initialSentForRef.current = null;
         }
         pendingSendRef.current = false;
+        // A compact asked for on this socket died with it (the server may
+        // never have read the frame). Let the pill work again.
+        compactingRef.current = false;
+        compactConfirmedRef.current = false;
+        setCompacting(false);
         setStatus('closed');
         const attempt = Math.min(reconnectAttemptRef.current, 3);
         const delay = Math.min(1000 * 2 ** attempt, 8000);
@@ -1026,6 +1037,7 @@ export function useChat(opts: {
       return;
     }
     compactingRef.current = true;
+    compactConfirmedRef.current = false;
     setCompacting(true);
     pendingActionRef.current = true;
     setError(null);
