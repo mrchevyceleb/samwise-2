@@ -37,6 +37,11 @@ function windowForClaudeModel(model: string | undefined): number {
 let nextId = 1;
 const id = () => `b${nextId++}`;
 
+/** 20902 -> "20.9k"; small counts pass through. */
+function shortTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k` : String(n);
+}
+
 // Pure reducer — all per-turn state lives on the blocks themselves
 // (turnId + cbIndex). This keeps it safe under React Strict Mode, which
 // invokes reducers twice for purity-checking.
@@ -48,7 +53,9 @@ function reduce(
    *  each event was emitted instead of restamping it at page load. */
   eventTs?: number,
 ): ChatBlock[] {
-  const t = typeof eventTs === 'number' ? eventTs : Date.now();
+  // Legacy events predate the server ts; leave them unstamped rather than
+  // restamp all history at page load (which reads as "replied just now").
+  const t = typeof eventTs === 'number' ? eventTs : undefined;
   if (!ev || typeof ev !== 'object') return blocks;
 
   if (ev.type === 'stream_event' && ev.event) {
@@ -66,6 +73,48 @@ function reduce(
     }
     const ts = typeof ev.ts === 'number' ? ev.ts : Date.now();
     return [...blocks, { kind: 'user', id: id(), text: ev.text, ts }];
+  }
+
+  // Manual compact: a quiet rule lands the moment it starts, then the CLI's
+  // compact_boundary turns it into a finished line with its real token counts.
+  if (ev.type === '_compact') {
+    return [...blocks, {
+      kind: 'divider',
+      id: id(),
+      label: 'compacting the conversation…',
+      ts: t,
+      turnId: turnIdRef.current,
+    }];
+  }
+  if (ev.type === 'system' && ev.subtype === 'compact_boundary') {
+    const meta = ev.compact_metadata ?? {};
+    const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : undefined;
+    const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined;
+    const label = pre !== undefined && post !== undefined
+      ? `compacted · ${shortTokens(pre)} → ${shortTokens(post)} tokens`
+      : 'conversation compacted';
+    // Only the compact of THIS turn may be relabelled: an auto-compact can
+    // land while an older, failed marker is still pending further up.
+    const idx = blocks.reduce(
+      (acc, b, i) => (b.kind === 'divider' && !b.done && b.turnId === turnIdRef.current ? i : acc),
+      -1,
+    );
+    if (idx >= 0) {
+      const copy = blocks.slice();
+      const target = copy[idx];
+      if (target.kind === 'divider') copy[idx] = { ...target, label, done: true };
+      return copy;
+    }
+    return [...blocks, { kind: 'divider', id: id(), label, ts: t, done: true }];
+  }
+
+  // Turn finished. A compact that did not produce a boundary before its
+  // result failed (nothing to summarize, CLI error); say so instead of
+  // leaving a "compacting…" line pending forever.
+  if (ev.type === 'result') {
+    return blocks.map((b) =>
+      b.kind === 'divider' && !b.done ? { ...b, label: 'compaction did not finish', done: true } : b,
+    );
   }
 
   if (ev.type === 'message_start') {
@@ -350,6 +399,11 @@ export function useChat(opts: {
   const pendingActionRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [usage, setUsage] = useState<ContextUsage | null>(null);
+  // True from the moment a compact is asked for until its turn ends. Keeps
+  // a second click quiet and lets the watchdog tolerate the CLI's long
+  // silence while it writes the summary.
+  const [compacting, setCompacting] = useState(false);
+  const compactingRef = useRef(false);
   const windowTokensRef = useRef(defaultWindowForCli(cli, model));
   /** Server-confirmed plan-mode flag. Updated on `ready` and `planModeChanged`.
    *  `null` means the server hasn't told us yet. */
@@ -697,6 +751,8 @@ export function useChat(opts: {
         else if (msg.type === 'turnEnd') {
           pendingSendRef.current = false;
           pendingActionRef.current = false;
+          compactingRef.current = false;
+          setCompacting(false);
           setStatus('ready');
         }
         else if (msg.type === 'freshStarted') {
@@ -759,6 +815,26 @@ export function useChat(opts: {
                   msg.event?.usage
                 ? (msg.event.usage as Record<string, number | undefined>)
                 : null;
+
+          // Compaction just rewrote the context: show the meter where it
+          // actually stands instead of waiting for the next model call.
+          if (
+            !spawnPerTurn &&
+            msg.event?.type === 'system' &&
+            msg.event?.subtype === 'compact_boundary' &&
+            typeof msg.event?.compact_metadata?.post_tokens === 'number'
+          ) {
+            const post = msg.event.compact_metadata.post_tokens as number;
+            const windowTokens = windowTokensRef.current;
+            setUsage({
+              inputTokens: post,
+              cacheReadTokens: 0,
+              cacheCreateTokens: 0,
+              outputTokens: 0,
+              fraction: Math.min(post / windowTokens, 1),
+              windowTokens,
+            });
+          }
 
           if (usagePayload) {
             const u = usagePayload;
@@ -869,13 +945,18 @@ export function useChat(opts: {
     // takes an open-socket fast path that resends `hello`, but a stale-OPEN
     // socket buffers send() into a dead TCP path and the hello never lands.
     const STREAM_SILENCE_MS = 45_000;
+    // Compaction is one long silent model call; it can legitimately go
+    // minutes without a single event. Killing the socket mid-summary would
+    // look like a failure and lose the compact.
+    const COMPACT_SILENCE_MS = 6 * 60_000;
     const WATCHDOG_TICK_MS = 5_000;
     const watchdog = window.setInterval(() => {
       if (!isCurrentConnection()) return;
       if (statusRef.current !== 'streaming') return;
-      if (Date.now() - lastMessageAtRef.current < STREAM_SILENCE_MS) return;
+      const silenceLimit = compactingRef.current ? COMPACT_SILENCE_MS : STREAM_SILENCE_MS;
+      if (Date.now() - lastMessageAtRef.current < silenceLimit) return;
       // eslint-disable-next-line no-console
-      console.warn(`[useChat] stream watchdog: silent ${STREAM_SILENCE_MS}ms, forcing reconnect`);
+      console.warn(`[useChat] stream watchdog: silent too long, forcing reconnect`);
       lastMessageAtRef.current = Date.now();
       forceReconnectRef.current();
     }, WATCHDOG_TICK_MS);
@@ -914,11 +995,48 @@ export function useChat(opts: {
     };
   }, [enabled, repo?.path, cli, chatId, modelField]);
 
+  /** Ask the server to run the CLI's own /compact on the warm session. The
+   *  conversation continues on the same session id under a summary; nothing
+   *  is lost from the visible thread. `instructions` focuses the summary
+   *  (the CLI supports "/compact keep the API notes"). */
+  const compact = (instructions?: string) => {
+    if (!repo) return;
+    const ws = wsRef.current;
+    // A second click while the first is still in flight would come back as
+    // "Sam is mid-turn", which reads as an error the user didn't cause.
+    if (compactingRef.current) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      setError('Sam is not on the line. Please wait a moment.');
+      return;
+    }
+    compactingRef.current = true;
+    setCompacting(true);
+    pendingActionRef.current = true;
+    setError(null);
+    ws.send(JSON.stringify({
+      type: 'compact',
+      cli,
+      repo: repo.path,
+      chatId,
+      ...modelField(),
+      ...(instructions ? { instructions } : {}),
+    }));
+  };
+
   const send = (
     text: string,
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
     if (!repo) return;
+    if (cli === 'claude' || cli === 'assistant') {
+      const m = text.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      if (m) {
+        // Images are irrelevant to a summary; the command path never sends
+        // them, so nothing is silently promised to the model.
+        compact(m[1].trim() || undefined);
+        return;
+      }
+    }
     const ws = wsRef.current;
     const expectedKey = conversationKey(cli, repo.path, chatId);
     setChat((prev) => {
@@ -965,6 +1083,13 @@ export function useChat(opts: {
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
     if (!repo) return;
+    if (cli === 'claude' || cli === 'assistant') {
+      const m = text.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      if (m) {
+        compact(m[1].trim() || undefined);
+        return;
+      }
+    }
     const ws = wsRef.current;
     const expectedKey = conversationKey(cli, repo.path, chatId);
     setChat((prev) => {
@@ -1036,6 +1161,6 @@ export function useChat(opts: {
 
   return {
     blocks, status, error, send, steer, freshStart, stop, reconnect, usage: displayedUsage,
-    planMode, setPlanMode, respondToTool,
+    planMode, setPlanMode, respondToTool, compact, compacting,
   };
 }

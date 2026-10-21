@@ -1,5 +1,5 @@
 import { useEffect, useRef, type WheelEvent } from 'react';
-import { SamPortrait, Dinkus, Chip } from '../primitives/atoms';
+import { SamPortrait, Dinkus, Chip, ChatDivider } from '../primitives/atoms';
 import {
   SamMessage,
   UserMessage,
@@ -40,6 +40,10 @@ type ConversationProps = {
   effort?: string;
   onModelChange?: (id: string) => void;
   onEffortChange?: (effort: string) => void;
+  /** Manual compact, offered on Claude lanes. */
+  onCompact?: (instructions?: string) => void;
+  /** A compact is already in flight. */
+  compactBusy?: boolean;
 };
 
 const statusToneByStatus: Record<Status, 'ember' | 'moss' | 'gold' | 'neutral'> = {
@@ -86,6 +90,8 @@ export function Conversation({
   effort,
   onModelChange,
   onEffortChange,
+  onCompact,
+  compactBusy = false,
 }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -373,6 +379,8 @@ export function Conversation({
                 />
               ) : undefined
             }
+            onCompact={modelPicker === 'claude' ? onCompact : undefined}
+            compactBusy={compactBusy}
             placeholder="speak, master…"
             onSend={onSend}
             onSteer={onSteer}
@@ -396,6 +404,9 @@ function renderBlocks(
   status: Status,
 ) {
   return blocks.map((b) => {
+    if (b.kind === 'divider') {
+      return <ChatDivider key={b.id} label={b.label} done={b.done} />;
+    }
     if (b.kind === 'user') {
       return (
         <UserMessage key={b.id} time={timeLabel(b.ts)} images={b.images}>
@@ -489,7 +500,8 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function timeLabel(ts: number): string {
+function timeLabel(ts?: number): string | undefined {
+  if (typeof ts !== 'number') return undefined;
   const d = new Date(ts);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }

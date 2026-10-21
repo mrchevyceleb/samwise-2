@@ -145,3 +145,29 @@ export function SearchGlyph({ size = 14 }: { size?: number }) {
     </svg>
   );
 }
+
+/** A quiet rule between messages: compaction and other housekeeping. */
+export function ChatDivider({ label, done }: { label: string; done?: boolean }) {
+  // Only the in-flight line is a live region; a replayed history of finished
+  // compactions must not announce anything.
+  return (
+    <div
+      style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}
+      aria-live={done ? undefined : 'polite'}
+    >
+      <span style={{ flex: 1, height: 1, background: 'var(--rule-soft)' }} />
+      <span
+        className="sw-folio"
+        style={{
+          fontStyle: 'italic',
+          fontSize: 12,
+          whiteSpace: 'nowrap',
+          color: done ? 'var(--moss)' : 'var(--ink-faint)',
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ flex: 1, height: 1, background: 'var(--rule-soft)' }} />
+    </div>
+  );
+}

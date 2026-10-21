@@ -1,6 +1,58 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 
 export type PickerOption = { value: string; label: string };
+
+/** The manual-compact affordance, in the same pill language as the model
+ *  pickers so it reads as part of the composer's furniture. */
+export function CompactPill({
+  onClick,
+  disabled = false,
+  title,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title ?? 'summarize this chat so far and make room; the thread stays'}
+      className="sw-picker-pill"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        background: 'var(--pill-bg)',
+        color: 'var(--pill-ink)',
+        border: '1px solid var(--pill-border)',
+        borderRadius: 999,
+        padding: '3px 11px',
+        fontFamily: 'var(--serif-display)',
+        fontStyle: 'italic',
+        fontSize: 13.5,
+        lineHeight: 1.5,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        userSelect: 'none',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true" style={{ opacity: 0.75 }}>
+        <path
+          d="M1.5 4.5V1.5h3M10.5 7.5v3h-3M4.9 7.1 2.1 9.9M7.1 4.9l2.8-2.8"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      compact
+    </button>
+  );
+}
 
 /**
  * A small pill dropdown with the app's toy feel: the pill lifts and glows
@@ -31,6 +83,7 @@ export function PickerPill({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
+  const optionIdBase = useId();
   const rootRef = useRef<HTMLSpanElement>(null);
   const current = options.find((o) => o.value === value) ?? options[0];
 
@@ -94,6 +147,10 @@ export function PickerPill({
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={open ? `${optionIdBase}-list` : undefined}
+        // Focus stays on the button, so the active option has to be pointed
+        // at explicitly for screen readers.
+        aria-activedescendant={open && active >= 0 ? `${optionIdBase}-opt-${active}` : undefined}
         title={title}
         disabled={disabled}
         onClick={(e) => {
@@ -140,6 +197,7 @@ export function PickerPill({
       {open && (
         <div
           role="listbox"
+          id={`${optionIdBase}-list`}
           aria-label={ariaLabel}
           tabIndex={-1}
           onKeyDown={onKeyDown}
@@ -163,6 +221,7 @@ export function PickerPill({
             return (
               <div
                 key={opt.value}
+                id={`${optionIdBase}-opt-${i}`}
                 role="option"
                 aria-selected={selected}
                 className="sw-picker-opt"

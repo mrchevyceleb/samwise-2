@@ -269,6 +269,18 @@ type ClientToolResponse = {
   toolUseId: string;
   content: string;
 };
+type ClientCompact = {
+  type: 'compact';
+  cli?: CliKind;
+  repo?: string;
+  chatId?: string;
+  /** Current picker choice, so a compact can recycle the warm process to the
+   *  model the user is looking at (same rule as send). */
+  model?: string;
+  effort?: string;
+  /** Optional focus for the summary, e.g. "/compact keep the API notes". */
+  instructions?: string;
+};
 type ClientSetPlanMode = {
   type: 'setPlanMode';
   cli: CliKind;
@@ -283,6 +295,7 @@ type ClientMsg =
   | ClientStop
   | ClientSteer
   | ClientToolResponse
+  | ClientCompact
   | ClientSetPlanMode;
 
 type ResumeWatchableSession = AnySession & {
@@ -389,9 +402,11 @@ wss.on('connection', (ws, req) => {
           sessionKey,
           sessionId,
           chatId,
-          // Block timestamps: live events use now, replayed ones keep the
-          // moment they were emitted so a reload doesn't restamp history.
-          ts: typeof se.ts === 'number' ? se.ts : Date.now(),
+          // Block timestamps: replayed events keep the moment they were
+          // emitted so a reload doesn't restamp history. Older log lines
+          // predate this field and go out unstamped (the client shows no
+          // time) rather than claiming they happened at page load.
+          ...(typeof se.ts === 'number' ? { ts: se.ts } : {}),
         });
       } else if (sev.type === 'turnEnd') {
         busy = false;
@@ -733,6 +748,80 @@ wss.on('connection', (ws, req) => {
         unsubscribe = null;
       } catch (e) {
         safeSend({ type: 'error', message: String((e as Error).message) });
+      }
+      return;
+    }
+
+    if (msg.type === 'compact') {
+      // Manual compact. Only the persistent Claude runner has an in-session
+      // /compact; codex/banana are spawn-per-turn and compact differently.
+      if (cliKind !== 'claude' && cliKind !== 'assistant') {
+        safeSend({ type: 'error', message: 'compacting is only available on Claude chats' });
+        return;
+      }
+      if (busy) {
+        safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
+        return;
+      }
+      if (!sessionPromise && cliKind && repoPath) {
+        try {
+          await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
+        } catch (e) {
+          safeSend({ type: 'error', message: String((e as Error).message) });
+          return;
+        }
+      }
+      if (!sessionPromise) {
+        safeSend({ type: 'error', message: 'no session, send hello first' });
+        return;
+      }
+      try {
+        let session: AnySession | null = await sessionPromise;
+        if (!session && cliKind && repoPath) {
+          session = await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
+        }
+        if (!session) throw new Error('session unavailable, please retry');
+        if (!('compact' in session)) {
+          throw new Error('this engine has no manual compact');
+        }
+        // Another tab or device can be mid-turn on this warm session, which
+        // this socket's `busy` flag would never know. Writing /compact into
+        // the shared stdin then would land inside their turn.
+        if ((session as ClaudeSession).isBusy()) {
+          safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
+          return;
+        }
+        // Same recycling rule as send: if the picker shows a different model
+        // than the warm child spawned with, recycle onto it first so the
+        // summary is written by the model the user chose. `busy` is set only
+        // AFTER the bind: a superseded bind returns early, and setting it
+        // before would leave this socket permanently "mid-turn".
+        if (typeof msg.model === 'string' && cliKind && repoPath) {
+          const desired = resolveClaudeSelection(msg.model, msg.effort);
+          const warm = session as ClaudeSession;
+          if (warm.model !== desired.model || warm.effort !== desired.effort) {
+            const rebound = await bindSession(getOrCreateSession({
+              cli: cliKind, repoPath, chatId, model: msg.model, effort: msg.effort,
+            }));
+            if (!rebound) return;
+            session = rebound;
+          }
+        }
+        turnGeneration += 1;
+        busy = true;
+        safeSend({
+          type: 'turnStart',
+          sessionKey: session.key,
+          sessionId: session.sessionId(),
+          chatId,
+        });
+        (session as ClaudeSession).compact(msg.instructions);
+      } catch (e) {
+        busy = false;
+        safeSend({ type: 'error', message: String((e as Error).message) });
+        if (activeSessionKey) {
+          safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId(), chatId });
+        }
       }
       return;
     }

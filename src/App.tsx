@@ -39,7 +39,7 @@ type View = 'threshold' | 'conversation';
 
 /** Shown for the brief moment a restored conversation waits for the repo
  *  list to say where it lives. Same vellum, same pulse as a live turn. */
-function MakingReady() {
+function MakingReady({ error = false, onRetry }: { error?: boolean; onRetry?: () => void }) {
   return (
     <div
       style={{
@@ -52,14 +52,25 @@ function MakingReady() {
         gap: 16,
       }}
     >
-      <span className="sw-thinking">
-        <span></span>
-        <span></span>
-        <span></span>
-      </span>
+      {!error && (
+        <span className="sw-thinking">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+      )}
       <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 13 }}>
-        making ready…
+        {error ? 'the shelves are out of reach' : 'making ready…'}
       </span>
+      {error && onRetry && (
+        <button
+          className="sw-btn"
+          onClick={onRetry}
+          style={{ fontSize: 13, padding: '6px 14px', minHeight: 0 }}
+        >
+          try again
+        </button>
+      )}
     </div>
   );
 }
@@ -286,14 +297,14 @@ export default function App() {
     if (target) {
       setRepo(target);
       restorePathRef.current = null;
-    } else if (!reposLoading) {
-      // Repo was removed since we saved the active session (or the list
-      // failed) — drop it rather than sit on a screen that can never bind.
+    } else if (reposState.status === 'ready') {
+      // Only a SUCCESSFUL list can prove the repo is gone. A transient fetch
+      // failure must not throw away the saved conversation.
       restorePathRef.current = null;
       writeActive(null);
       setView('threshold');
     }
-  }, [repos, reposLoading, repo]);
+  }, [repos, reposState.status, repo]);
 
   // Track the live branch for the active repo so `git checkout` mid-chat
   // updates the header chip and the chat-input footer in real time.
@@ -387,13 +398,21 @@ export default function App() {
     if (liveHubRepo) {
       saddlingRef.current = null;
       setSaddling(false);
-      openConversation({ ...held, repo: liveHubRepo });
-    } else if (!reposLoading) {
+      // The engine picked on the threshold is carried through the hold: the
+      // Assistant lane runs whichever engine is selected, and by now the hub
+      // is real, so a Codex/Banana pick is safe to apply.
+      const c = held.companion === 'assistant' && assistantEngine !== 'claude'
+        ? assistantEngine
+        : held.companion;
+      openConversation({ ...held, companion: c, repo: liveHubRepo });
+    } else if (reposState.status === 'ready') {
+      // A successful list with no hub announced: open the request as-is so a
+      // typed prompt is never stranded. A failed fetch keeps the hold.
       saddlingRef.current = null;
       setSaddling(false);
       openConversation(held);
     }
-  }, [liveHubRepo, reposLoading, openConversation]);
+  }, [liveHubRepo, reposState.status, openConversation, assistantEngine]);
 
   const repoForPath = (path: string, name?: string): Repo => {
     const known = repos.find((r) => r.path === path);
@@ -475,10 +494,19 @@ export default function App() {
     ? `${repo.name}${branchForLabel ? ` · ${branchForLabel}` : ''}`
     : 'just chatting';
   const commandPrefix = companion === 'codex' ? '$' : '/';
+  // /compact is a CLI built-in, not a file in ~/.claude/commands, so it is
+  // added here for the Claude lanes. Typing it sends the compact action
+  // instead of a chat message.
+  const claudeCommands = commands.claude.some((c) => c.name === 'compact')
+    ? commands.claude
+    : [
+        { name: 'compact', title: 'Compact', description: 'summarize this chat and make room' },
+        ...commands.claude,
+      ];
   const activeCommands =
     companion === 'codex' ? commands.codex
     : companion === 'banana' ? commands.banana
-    : commands.claude;
+    : claudeCommands;
 
   const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
 
@@ -537,9 +565,11 @@ export default function App() {
             initialCompanion={thresholdCompanion}
             initialRepo={repo}
             settingForth={saddling}
+            reposError={reposState.status === 'error'}
+            onRetryRepos={() => reposState.reload()}
           />
         ) : awaitingRestore ? (
-          <MakingReady />
+          <MakingReady error={reposState.status === 'error'} onRetry={() => reposState.reload()} />
         ) : (
           <MobileConversation
             agent={COMPANION_LABEL[companion]}
@@ -566,6 +596,8 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
+            onCompact={chat.compact}
+            compactBusy={chat.compacting}
           />
         )}
         <MobileChronicleSheet
@@ -628,9 +660,11 @@ export default function App() {
             initialCompanion={thresholdCompanion}
             initialRepo={repo}
             settingForth={saddling}
+            reposError={reposState.status === 'error'}
+            onRetryRepos={() => reposState.reload()}
           />
         ) : awaitingRestore ? (
-          <MakingReady />
+          <MakingReady error={reposState.status === 'error'} onRetry={() => reposState.reload()} />
         ) : (
           <Conversation
             agent={COMPANION_LABEL[companion]}
@@ -656,6 +690,8 @@ export default function App() {
             effort={pickerEffort}
             onModelChange={onPickerModelChange}
             onEffortChange={onPickerEffortChange}
+            onCompact={chat.compact}
+            compactBusy={chat.compacting}
           />
         )}
       </main>

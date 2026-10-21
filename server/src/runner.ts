@@ -376,6 +376,39 @@ class ClaudeSession {
     }
   }
 
+  /** Compact the conversation in place: the CLI's own /compact. The child
+   *  keeps its session id (the transcript on disk gets a compact boundary),
+   *  so the next turn continues under the summarized context. The CLI emits
+   *  `system compact_boundary` with pre/post token counts when it lands, and
+   *  a final `result`, which ends the turn like any other. */
+  compact(instructions?: string): void {
+    if (this.child.exitCode !== null) {
+      this.emit({ type: 'error', message: 'session has exited' });
+      // The turn was already announced upstream; a turn with no turnEnd
+      // leaves the client streaming until its watchdog fires.
+      this.turnStartedAt = null;
+      this.emit({ type: 'turnEnd', sessionId: this.currentSessionId ?? undefined });
+      return;
+    }
+    this.turnStartedAt = Date.now();
+    // Marker for the thread: no _user_echo here, because the user did not
+    // type anything. The client renders this as a small rule, then updates
+    // it with the compact_boundary's token counts.
+    this.emit({ type: 'event', event: { type: '_compact', ts: Date.now() } });
+    const payload = JSON.stringify({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: instructions ? `/compact ${instructions}` : '/compact',
+      },
+    });
+    try {
+      this.child.stdin.write(payload + '\n');
+    } catch (e) {
+      this.emit({ type: 'error', message: `compact write failed: ${(e as Error).message}` });
+    }
+  }
+
   /** Reply to a tool the model is waiting on (AskUserQuestion, ExitPlanMode,
    *  any other interactive tool that needs a tool_result to advance the turn).
    *  We keep this separate from `send` because tool_result is part of the

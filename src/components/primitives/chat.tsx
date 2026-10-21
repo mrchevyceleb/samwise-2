@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { SamPortrait } from './atoms';
+import { CompactPill } from './PickerPill';
 import type { CommandEntry } from '../../data/types';
 import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
@@ -751,6 +752,8 @@ export function ChatInput({
   agent = 'Claude Code',
   repo = '',
   picker,
+  onCompact,
+  compactBusy = false,
   acceptImages = true,
 }: {
   value?: string;
@@ -769,6 +772,11 @@ export function ChatInput({
   /** Model / effort picker slot. Lives in the composer header so it stays on
    *  screen however far the thread scrolls. */
   picker?: ReactNode;
+  /** Manual compact (Claude lanes only). Omitted hides the affordance.
+   *  Receives the optional focus text from "/compact keep the API notes". */
+  onCompact?: (instructions?: string) => void;
+  /** A compact is already in flight; the pill stays disabled until it ends. */
+  compactBusy?: boolean;
   acceptImages?: boolean;
 }) {
   const [internal, setInternal] = useState(value ?? '');
@@ -801,6 +809,16 @@ export function ChatInput({
 
   const submit = () => {
     if (!v.trim() && images.length === 0) return;
+    // A typed /compact is housekeeping, not a message. Handled before the
+    // busy branch so it can never be steered into a running turn.
+    if (onCompact) {
+      const m = v.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      if (m) {
+        onCompact(m[1].trim() || undefined);
+        setV('');
+        return;
+      }
+    }
     const imgs = images.length
       ? images.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
       : undefined;
@@ -878,6 +896,8 @@ export function ChatInput({
           display: 'flex',
           alignItems: 'center',
           gap: 10,
+          rowGap: 6,
+          flexWrap: 'wrap',
           marginBottom: 10,
           paddingBottom: 8,
           borderBottom: '1px dashed var(--rule-soft)',
@@ -918,6 +938,11 @@ export function ChatInput({
         {picker && (
           <span style={{ display: 'inline-flex', flexShrink: 0, marginLeft: 2 }}>
             {picker}
+          </span>
+        )}
+        {onCompact && (
+          <span style={{ display: 'inline-flex', flexShrink: 0 }}>
+            <CompactPill onClick={() => onCompact()} disabled={busy || compactBusy} />
           </span>
         )}
         <span

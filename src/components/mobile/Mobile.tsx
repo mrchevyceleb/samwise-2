@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type TouchEvent, type WheelEvent } from 'react';
-import { SamPortrait, Dinkus, Chip, SearchGlyph } from '../primitives/atoms';
+import { SamPortrait, Dinkus, Chip, SearchGlyph, ChatDivider } from '../primitives/atoms';
+import { CompactPill } from '../primitives/PickerPill';
 import {
   SamMessage,
   UserMessage,
@@ -13,7 +14,8 @@ import { ClaudeModelPicker } from '../primitives/ClaudeModelPicker';
 import { isInteractiveTool } from '../../hooks/useChat';
 import { commandText, getCommandSuggestion } from '../../utils/commandAutocomplete';
 
-function timeLabel(ts: number): string {
+function timeLabel(ts?: number): string | undefined {
+  if (typeof ts !== 'number') return undefined;
   const d = new Date(ts);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
@@ -169,6 +171,8 @@ export function MobileThreshold({
   repos,
   reposLoading,
   settingForth = false,
+  reposError = false,
+  onRetryRepos,
   onSetForth,
   onToggleStar,
   liveSessions = [],
@@ -185,6 +189,9 @@ export function MobileThreshold({
   reposLoading?: boolean;
   /** A set-forth is held until the repo list resolves the live hub. */
   settingForth?: boolean;
+  /** The repo list itself failed; offer a retry instead of a dead hold. */
+  reposError?: boolean;
+  onRetryRepos?: () => void;
   onSetForth: (params: {
     companion: CompanionId;
     repo?: Repo;
@@ -485,6 +492,10 @@ export function MobileThreshold({
           onSubmit={(e) => {
             e.preventDefault();
             if (!query.trim()) return;
+            if (settingForth) return;
+            // Same rule as the desktop threshold: nothing typed can resolve a
+            // repo until the list lands, and a repo-less thread cannot send.
+            if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
             const text = query.trim();
             setQuery('');
             onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
@@ -637,7 +648,10 @@ export function MobileThreshold({
                             key={r.path}
                             repo={r}
                             selected={r.path === selectedRepoPath}
-                            onClick={() => setSelectedRepo(r)}
+                            onClick={() => {
+                              setSelectedRepo(r);
+                              setQuery('');
+                            }}
                             onToggleStar={onToggleStar}
                           />
                         ))}
@@ -649,7 +663,10 @@ export function MobileThreshold({
                         key={r.path}
                         repo={r}
                         selected={r.path === selectedRepoPath}
-                        onClick={() => setSelectedRepo(r)}
+                        onClick={() => {
+                          setSelectedRepo(r);
+                          setQuery('');
+                        }}
                         onToggleStar={onToggleStar}
                       />
                     ))}
@@ -679,14 +696,26 @@ export function MobileThreshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
-            {settingForth ? 'setting forth · finding the hub…' : 'tap to set forth'}
+            {settingForth
+              ? reposError ? 'setting forth · shelves out of reach' : 'setting forth · finding the hub…'
+              : 'tap to set forth'}
           </span>
           <span style={{ marginLeft: 'auto' }} />
+          {reposError && onRetryRepos && (
+            <button
+              className="sw-btn"
+              onClick={onRetryRepos}
+              style={{ fontSize: 13, padding: '8px 12px', minHeight: 0, flexShrink: 0 }}
+            >
+              retry
+            </button>
+          )}
           <button
             className="sw-btn sw-btn-primary"
-            disabled={settingForth}
+            disabled={settingForth || (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant')}
             onClick={() => {
               if (settingForth) return;
+              if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
               const text = query.trim();
               setQuery('');
               onSetForth({
@@ -773,6 +802,8 @@ export function MobileConversation({
   effort,
   onModelChange,
   onEffortChange,
+  onCompact,
+  compactBusy = false,
 }: {
   agent?: string;
   repo?: string;
@@ -798,6 +829,10 @@ export function MobileConversation({
   effort?: string;
   onModelChange?: (id: string) => void;
   onEffortChange?: (effort: string) => void;
+  /** Manual compact, offered on Claude lanes; receives optional focus text. */
+  onCompact?: (instructions?: string) => void;
+  /** A compact is already in flight. */
+  compactBusy?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [pendingImages, setPendingImages] = useState<Array<{ id: string; mediaType: string; base64: string; previewUrl: string }>>([]);
@@ -901,6 +936,16 @@ export function MobileConversation({
 
   const submit = () => {
     if (!draft.trim() && pendingImages.length === 0) return;
+    // /compact is housekeeping, handled before the busy branch so it never
+    // turns into a steer that interrupts the running turn.
+    if (onCompact) {
+      const m = draft.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      if (m) {
+        onCompact(m[1].trim() || undefined);
+        setDraft('');
+        return;
+      }
+    }
     const imgs = pendingImages.length
       ? pendingImages.map((i) => ({ mediaType: i.mediaType, base64: i.base64 }))
       : undefined;
@@ -1122,6 +1167,9 @@ export function MobileConversation({
         )}
 
         {blocks.map((b) => {
+          if (b.kind === 'divider') {
+            return <ChatDivider key={b.id} label={b.label} done={b.done} />;
+          }
           if (b.kind === 'user') {
             return (
               <UserMessage key={b.id} time={timeLabel(b.ts)} images={b.images}>
@@ -1225,7 +1273,7 @@ export function MobileConversation({
           </div>
         )}
         {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
-          <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <ClaudeModelPicker
               model={model}
               effort={effort}
@@ -1234,6 +1282,9 @@ export function MobileConversation({
               onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
             />
+            {onCompact && (
+              <CompactPill onClick={() => onCompact()} disabled={status === 'streaming' || compactBusy} />
+            )}
           </div>
         )}
         {pendingImages.length > 0 && (

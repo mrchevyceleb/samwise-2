@@ -57,11 +57,26 @@ export type ChatBlock =
       kind: 'text';
       id: string;
       text: string;
-      ts: number;
+      /** When the event was emitted. Absent for history persisted before the
+       *  server stamped events; better no time than a wrong one. */
+      ts?: number;
       folio?: string;
       turnId?: string;
       cbIndex?: number;
       open?: boolean;
+    }
+  | {
+      /** A quiet rule in the thread: compaction and other housekeeping the
+       *  user should see but which is not a message from either side. */
+      kind: 'divider';
+      id: string;
+      label: string;
+      ts?: number;
+      /** The turn this marker belongs to, so only that turn's compact_boundary
+       *  can complete it. */
+      turnId?: string;
+      /** Set once the step finished (compaction reports its token counts). */
+      done?: boolean;
     }
   | {
       kind: 'tool';
@@ -71,7 +86,7 @@ export type ChatBlock =
       args: string;
       result?: string;
       running: boolean;
-      ts: number;
+      ts?: number;
       turnId?: string;
       cbIndex?: number;
       open?: boolean;

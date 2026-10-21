@@ -25,6 +25,9 @@ type ThresholdProps = {
   reposLoading?: boolean;
   /** A set-forth is held until the repo list resolves the live hub. */
   settingForth?: boolean;
+  /** The repo list itself failed; offer a retry instead of a dead hold. */
+  reposError?: boolean;
+  onRetryRepos?: () => void;
   onSetForth: (params: {
     companion: CompanionId;
     repo?: Repo;
@@ -43,6 +46,8 @@ export function Threshold({
   repos,
   reposLoading,
   settingForth = false,
+  reposError = false,
+  onRetryRepos,
   onSetForth,
   onToggleStar,
   assistantEngine = 'claude',
@@ -93,11 +98,17 @@ export function Threshold({
       : companion;
 
   const setForth = (initialMessage?: string) => {
+    // The repo list has not landed yet, so nothing can be resolved from what
+    // was typed. Opening now would land in a thread with no repo, where the
+    // typed message can never be sent. Keep it on the threshold; the list is
+    // a fraction of a second away.
+    if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
     onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage });
   };
 
   const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter' || !query.trim()) return;
+    if (settingForth) return;
     e.preventDefault();
     // If exactly one repo matches, treat the typed text as a repo selector and
     // just set forth without a message. Otherwise treat it as the first message.
@@ -377,7 +388,12 @@ export function Threshold({
                           key={r.path}
                           repo={r}
                           selected={r.path === selectedRepoPath}
-                          onClick={() => setSelectedRepo(r)}
+                          onClick={() => {
+                            setSelectedRepo(r);
+                            // The text was a filter, not a message. Leaving it
+                            // in made "Set forth" send it as the first prompt.
+                            setQuery('');
+                          }}
                           onToggleStar={onToggleStar}
                         />
                       ))}
@@ -419,12 +435,27 @@ export function Threshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic' }}>
-            {settingForth ? 'setting forth · finding the hub…' : '↵ to set forth · ⌘ + ↑/↓ to walk through'}
+            {settingForth
+              ? reposError
+                ? 'setting forth · shelves out of reach'
+                : 'setting forth · finding the hub…'
+              : reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant'
+                ? 'scanning the shelves · one moment…'
+                : '↵ to set forth · ⌘ + ↑/↓ to walk through'}
           </span>
           <span style={{ marginLeft: 'auto' }}></span>
+          {reposError && onRetryRepos && (
+            <button
+              className="sw-btn"
+              onClick={onRetryRepos}
+              style={{ fontSize: 13, padding: '6px 12px', minHeight: 0 }}
+            >
+              retry
+            </button>
+          )}
           <button
             className="sw-btn sw-btn-primary"
-            disabled={settingForth}
+            disabled={settingForth || (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant')}
             style={{
               fontSize: 16,
               padding: '10px 24px',
