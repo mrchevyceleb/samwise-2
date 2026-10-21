@@ -92,7 +92,9 @@ function reduce(
     const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined;
     const label = pre !== undefined && post !== undefined
       ? `compacted its memory · ${shortTokens(pre)} → ${shortTokens(post)} tokens`
-      : 'compacted its memory';
+      : post !== undefined
+        ? `compacted its memory · now ${shortTokens(post)} tokens`
+        : 'compacted its memory';
     // Only the compact of THIS turn may be relabelled: an auto-compact can
     // land while an older, failed marker is still pending further up.
     const idx = blocks.reduce(

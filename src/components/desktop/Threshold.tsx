@@ -116,6 +116,10 @@ export function Threshold({
     return regularRepos.find((r) => r.name.toLowerCase() === q);
   };
 
+  /** What Enter will actually open: a typed exact name wins over the
+   *  highlighted card, so the destination chip has to say so too. */
+  const destRepo = companion === 'assistant' ? effectiveRepo : typedRepo(query) ?? effectiveRepo;
+
   const setForth = (initialMessage?: string) => {
     // The repo list has not landed yet, so nothing can be resolved from what
     // was typed. Opening now would land in a thread with no repo, where the
@@ -242,7 +246,10 @@ export function Threshold({
         </span>
       </p>
       <div className="sw-ticker" aria-hidden style={{ marginTop: 26, width: '100%', maxWidth: 960 }}>
-        <span className="sw-ticker-track sw-folio" style={{ fontStyle: 'italic', fontSize: 11.5 }}>
+        <span
+          className="sw-ticker-track sw-folio"
+          style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-soft)' }}
+        >
           {Array.from({ length: 2 }).map((_, i) => (
             <span key={i}>
               {' '}say a repo's name to set forth · /compact keeps a long chat light ·
@@ -304,10 +311,10 @@ export function Threshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
-          {companion !== 'assistant' && effectiveRepo && (
+          {companion !== 'assistant' && destRepo && (
             <span
               className="sw-mono sw-dest"
-              title={`what you type sets forth into ${effectiveRepo.name}`}
+              title={`Enter sets forth into ${destRepo.name}`}
               style={{
                 fontSize: 12,
                 color: 'var(--ember)',
@@ -321,7 +328,7 @@ export function Threshold({
                 textOverflow: 'ellipsis',
               }}
             >
-              → {effectiveRepo.name}
+              → {destRepo.name}
             </span>
           )}
           <span className="sw-folio">⌘K</span>

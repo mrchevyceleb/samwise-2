@@ -1057,7 +1057,7 @@ export function ChatInput({
             ))}
           </div>
         )}
-        {suggestion && (
+        {suggestion && commandHints.length === 0 && (
           <div
             aria-hidden
             style={{

@@ -88,7 +88,7 @@ function MobileGrowingInput({
             })}
           </div>
         )}
-        {suggestion && (
+        {suggestion && hints.length === 0 && (
           <div
             aria-hidden
             style={{
@@ -146,7 +146,7 @@ function MobileGrowingInput({
           }}
         />
       </div>
-      {suggestion && (
+      {suggestion && hints.length === 0 && (
         <button
           onClick={acceptSuggestion}
           style={{
@@ -290,6 +290,13 @@ export function MobileThreshold({
       ? assistantEngine
       : companion;
 
+  /** What Speak will actually open: a typed exact name wins over the
+   *  highlighted card, so the destination chip has to say so too. */
+  const destRepo =
+    companion === 'assistant'
+      ? effectiveRepo
+      : regularRepos.find((r) => r.name.toLowerCase() === query.trim().toLowerCase()) ?? effectiveRepo;
+
   /** One rule for the phone's Enter and its Set forth button: a typed exact
    *  repo name picks that repo; anything else is the first message for the
    *  repo in the destination chip. */
@@ -419,11 +426,13 @@ export function MobileThreshold({
       </p>
 
       <div className="sw-ticker" aria-hidden style={{ marginTop: 22, width: '100%' }}>
-        <span className="sw-ticker-track sw-folio" style={{ fontStyle: 'italic', fontSize: 11 }}>
+        <span
+          className="sw-ticker-track sw-folio"
+          style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ink-soft)' }}
+        >
           {Array.from({ length: 2 }).map((_, i) => (
             <span key={i}>
-              {' '}say a repo's name to set forth · /compact keeps a long chat light ·
-              {' '}tap a shelf below · ✦ ·{' '}
+              {' '}say a repo's name · /compact lightens a long chat · tap a shelf · ✦ ·{' '}
             </span>
           ))}
         </span>
@@ -629,10 +638,10 @@ export function MobileThreshold({
               color: query ? 'var(--ink)' : 'var(--ink-faint)',
             }}
           />
-          {companion !== 'assistant' && effectiveRepo && (
+          {companion !== 'assistant' && destRepo && (
             <span
               className="sw-mono sw-dest"
-              title={`what you type sets forth into ${effectiveRepo.name}`}
+              title={`speaking sets forth into ${destRepo.name}`}
               style={{
                 fontSize: 10.5,
                 color: 'var(--ember)',
@@ -646,7 +655,7 @@ export function MobileThreshold({
                 textOverflow: 'ellipsis',
               }}
             >
-              → {effectiveRepo.name}
+              → {destRepo.name}
             </span>
           )}
         </form>
@@ -1167,6 +1176,7 @@ export function MobileConversation({
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             flex: 1,
+            minWidth: 0,
           }}
         >
           {title}
@@ -1189,7 +1199,8 @@ export function MobileConversation({
               color: planMode ? 'var(--vellum)' : 'var(--ink-soft)',
               border: '1px solid ' + (planMode ? 'var(--gold)' : 'var(--rule-soft)'),
               borderRadius: 999,
-              padding: '3px 9px',
+              padding: '6px 11px',
+              minHeight: 32,
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
               fontSize: 11,
@@ -1216,7 +1227,8 @@ export function MobileConversation({
               fontSize: 16,
               color: 'var(--ink-soft)',
               cursor: 'pointer',
-              width: 24,
+              width: 32,
+              minHeight: 32,
               flexShrink: 0,
             }}
           >
@@ -1224,6 +1236,23 @@ export function MobileConversation({
           </button>
         )}
       </div>
+      {repo && (
+        <div
+          className="sw-mono"
+          title={repo}
+          style={{
+            padding: '0 10px 5px 10px',
+            fontSize: 9.5,
+            letterSpacing: '0.04em',
+            color: 'var(--ink-soft)',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {repo}
+        </div>
+      )}
       {usage && (
         <div
           style={{
@@ -1582,9 +1611,10 @@ export function MobileConversation({
               background: 'var(--vellum)',
               color: 'var(--ink-soft)',
               borderRadius: 6,
-              padding: '3px 8px',
+              padding: '7px 11px',
+              minHeight: 32,
               fontFamily: 'var(--mono)',
-              fontSize: 11,
+              fontSize: 11.5,
               cursor: 'pointer',
             }}
           >
@@ -1597,9 +1627,10 @@ export function MobileConversation({
               background: 'var(--vellum)',
               color: 'var(--ink-soft)',
               borderRadius: 6,
-              padding: '3px 8px',
+              padding: '7px 11px',
+              minHeight: 32,
               fontFamily: 'var(--mono)',
-              fontSize: 11,
+              fontSize: 11.5,
               cursor: 'pointer',
             }}
           >
@@ -1616,7 +1647,8 @@ export function MobileConversation({
                 background: 'var(--vellum)',
                 color: 'var(--ink-soft)',
                 borderRadius: 6,
-                padding: '3px 10px',
+                padding: '6px 12px',
+                minHeight: 32,
                 fontFamily: 'var(--serif-display)',
                 fontStyle: 'italic',
                 fontSize: 12,

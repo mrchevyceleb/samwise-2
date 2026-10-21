@@ -136,9 +136,7 @@ export class CodexSession {
   private compactionRun: Promise<void> | null = null;
   /** Suppresses emits while a stopped session is being torn down. */
   private silent = false;
-  /** Fresh input of the last finished turn; the "before" figure when the app
-   *  server reports no usage of its own before the first compact. */
-  private lastTurnInputTokens: number | null = null;
+
   private dead = false;
   private currentChild: ChildProcess | null = null;
   /** Set by shutdown() before SIGTERM so the in-flight send()'s close handler
@@ -294,16 +292,17 @@ export class CodexSession {
     this.compactionAbort = abort;
     this.emitClaudeEvent({ type: '_compact', ts: Date.now() });
     try {
-      const { preTokens, postTokens } = await compactCodexThread(this.threadId as string, this.cwd, abort.signal);
+      const { postTokens } = await compactCodexThread(this.threadId as string, this.cwd, abort.signal);
       this.emitClaudeEvent({
         type: 'system',
         subtype: 'compact_boundary',
         session_id: this.threadId,
         compact_metadata: {
           trigger: 'manual',
-          ...(typeof (preTokens ?? this.lastTurnInputTokens) === 'number'
-            ? { pre_tokens: preTokens ?? this.lastTurnInputTokens! }
-            : {}),
+          // Codex reports thread-cumulative input rather than the context it
+          // is holding, so a "before" figure from it reads as a fiction
+          // (a two-line chat claiming 131k). Only the size after compaction,
+          // which is the summary itself, is trustworthy.
           ...(typeof postTokens === 'number' ? { post_tokens: postTokens } : {}),
         },
       });
@@ -698,10 +697,6 @@ export class CodexSession {
       const cached = Number(u.cached_input_tokens ?? 0);
       const output = Number(u.output_tokens ?? 0);
       const effectiveInput = cached > 0 && cached < input ? input - cached : input;
-      // The fallback "before" figure is the context the model actually saw,
-      // not the fresh (uncached) part: fresh input can be smaller than the
-      // compacted result and produce an impossible 2k -> 30k chip.
-      this.lastTurnInputTokens = Math.max(0, input);
       state.usage = {
         // Codex reports huge cumulative cache-read counts. For the context
         // meter, show the effective fresh input instead of reconstructing the

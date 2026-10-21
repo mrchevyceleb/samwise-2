@@ -104,11 +104,11 @@ a { color: inherit; }
    A small shelf of what can be typed, so /compact is discoverable instead of
    folklore. Springs up from the composer like the picker menus. */
 .sw-cmdhints {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(100% + 6px);
+  /* In normal flow above the textarea: the shelf pushes the composer instead of
+     floating over the model chips, which used to peek out above it. */
+  position: relative;
   z-index: 30;
+  margin-bottom: 6px;
   background: var(--vellum);
   border: 1px solid var(--rule);
   border-radius: 8px;
