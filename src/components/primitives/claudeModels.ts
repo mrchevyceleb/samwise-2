@@ -84,3 +84,25 @@ export function writeStoredClaudeSelection(model: string, effort: string): void 
     normalizeClaudeEffort(normalizedModel, effort),
   );
 }
+
+// The model + effort a live Claude session last reported. Kept beside the
+// picker's stored choice so a browser can tell "this value came from the
+// session" apart from "Matt picked this here". Without it, every reconnect
+// either ignores the session (find 5: phone shows the wrong model) or stomps
+// an explicit pick on this device.
+export const CLAUDE_SESSION_MODEL_STORAGE_KEY = 'samwise-2:claude-session-model';
+export const CLAUDE_SESSION_EFFORT_STORAGE_KEY = 'samwise-2:claude-session-effort';
+
+export function readSessionClaudeSelection(): { model: string | null; effort: string | null } {
+  if (typeof window === 'undefined') return { model: null, effort: null };
+  return {
+    model: localStorage.getItem(CLAUDE_SESSION_MODEL_STORAGE_KEY),
+    effort: localStorage.getItem(CLAUDE_SESSION_EFFORT_STORAGE_KEY),
+  };
+}
+
+export function writeSessionClaudeSelection(model: string, effort: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(CLAUDE_SESSION_MODEL_STORAGE_KEY, model);
+  localStorage.setItem(CLAUDE_SESSION_EFFORT_STORAGE_KEY, effort);
+}

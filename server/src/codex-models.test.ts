@@ -18,7 +18,7 @@ test('resolves model-specific Codex efforts', () => {
 });
 
 test('rejects malformed browser values without coercing them', () => {
-  const fallback = { model: 'gpt-6.1-sol', effort: 'low' };
+  const fallback = { model: 'gpt-6.1-sol', effort: 'medium' };
   const hostile = { toString: null, valueOf: null };
 
   assert.doesNotThrow(() => resolveCodexSelection(hostile, hostile));

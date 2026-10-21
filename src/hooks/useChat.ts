@@ -292,8 +292,15 @@ export function useChat(opts: {
   model?: string;
   /** Codex reasoning effort. Ignored by Claude and Banana. */
   effort?: string;
+  /** The model + effort a live Claude/assistant session was spawned with.
+   *  Lets the picker follow the session across devices instead of showing
+   *  this browser's stored choice. */
+  onSessionSelection?: (
+    model: string,
+    effort?: string,
+  ) => { model: string; effort: string } | null;
 }) {
-  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model, effort } = opts;
+  const { repo, cli, chatId = 'main', enabled, initialMessage, onInitialMessageSent, model, effort, onSessionSelection } = opts;
   // Mirror the selection before paint so a send/steer event can never observe
   // the prior render's pair after the picker already shows the new values.
   const selectionRef = useRef<{ model?: string; effort?: string }>({ model, effort });
@@ -303,7 +310,12 @@ export function useChat(opts: {
   const modelField = useCallback((): { model?: string; effort?: string } => {
     const selection = selectionRef.current;
     if (cli === 'banana' && selection.model) return { model: selection.model };
-    if ((cli === 'codex' || cli === 'claude') && selection.model && selection.effort) {
+    // `assistant` is the hub lane running the Claude CLI, so it takes the
+    // Claude model/effort pair exactly like `claude` does.
+    if (
+      (cli === 'codex' || cli === 'claude' || cli === 'assistant')
+      && selection.model && selection.effort
+    ) {
       return { model: selection.model, effort: selection.effort };
     }
     return {};
@@ -353,8 +365,28 @@ export function useChat(opts: {
   /** The value the in-flight flags belong to. A NEW prompt clears them; a
    *  re-render of the same prompt must not. */
   const initialSeenRef = useRef<string | null>(initialMessage ?? null);
+  /** Delivery ledger for the threshold prompt: which exact (conversation,
+   *  text) pair has already been handed to the socket, and whether the server
+   *  ever confirmed it with a turnStart. `initialSendInFlightRef` alone is not
+   *  enough: turnStart and socket closes clear it by design, which reopens the
+   *  window for the other send path mid-turn. This entry is NOT cleared by any
+   *  server event — only by a genuinely new prompt, a conversation switch, or
+   *  a socket that dies before the server confirmed the turn (so a reconnect
+   *  can still retry a prompt that never landed). */
+  const initialDeliveredRef = useRef<{
+    key: string;
+    ws: WebSocket | null;
+    confirmed: boolean;
+  } | null>(null);
+  /** True once THIS connection has seen the server's `ready`. The pending
+   *  threshold prompt must not go out before that: `ready` is what reports
+   *  the session's real model/effort, and sending first would recycle the
+   *  live session back to this browser's stale stored default. */
+  const readySeenRef = useRef(false);
   const onInitialMessageSentRef = useRef(onInitialMessageSent);
   onInitialMessageSentRef.current = onInitialMessageSent;
+  const onSessionSelectionRef = useRef(onSessionSelection);
+  onSessionSelectionRef.current = onSessionSelection;
   /** Latest event seq received from server. Sent on reconnect for replay. */
   const lastSeqRef = useRef(-1);
   /** Wall-clock ms of the most recent WS message. Drives the streaming
@@ -377,6 +409,7 @@ export function useChat(opts: {
         initialSeenRef.current = initialMessage;
         initialSentForRef.current = null;
         initialSendInFlightRef.current = false;
+        initialDeliveredRef.current = null;
       }
       initialMessageRef.current = initialMessage;
       if (initialSentForRef.current === initialMessage) return;
@@ -386,11 +419,25 @@ export function useChat(opts: {
         ws &&
         ws.readyState === WebSocket.OPEN &&
         !initialSendInFlightRef.current &&
+        readySeenRef.current &&
         (status === 'ready' || status === 'idle')
       ) {
         const expectedKey = conversationKey(cli, repo.path, chatId);
+        const deliveryKey = `${expectedKey}\u0000${initialMessage}`;
+        const delivered = initialDeliveredRef.current;
+        if (
+          delivered &&
+          delivered.key === deliveryKey &&
+          (delivered.confirmed || delivered.ws === ws)
+        ) {
+          // This prompt already went out on this conversation. A confirmation
+          // or a still-open socket means the server has it; sending again
+          // would double the turn.
+          return;
+        }
         initialSendInFlightRef.current = true;
         initialSentForRef.current = initialMessage;
+        initialDeliveredRef.current = { key: deliveryKey, ws, confirmed: false };
         setChat((prev) => {
           if (prev.key !== expectedKey) return prev;
           const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
@@ -410,6 +457,7 @@ export function useChat(opts: {
       initialMessageRef.current = null;
       initialSentForRef.current = null;
       initialSeenRef.current = null;
+      initialDeliveredRef.current = null;
     }
   }, [chatId, cli, initialMessage, modelField, repo, status]);
 
@@ -437,6 +485,7 @@ export function useChat(opts: {
     if (!enabled || !repo) return;
 
     teardownRef.current = false;
+    readySeenRef.current = false;
     const connectionId = ++connectionIdRef.current;
     const isCurrentConnection = () => connectionIdRef.current === connectionId && !teardownRef.current;
     // Conversation identity for this effect's lifetime. setChat updates that
@@ -549,14 +598,46 @@ export function useChat(opts: {
           // looking idle while events stream in via replay.
           setStatus(msg.busy ? 'streaming' : 'ready');
           if (typeof msg.planMode === 'boolean') setPlanModeState(msg.planMode);
+          if (typeof msg.model === 'string') {
+            const sessionEffort = typeof msg.effort === 'string' ? msg.effort : undefined;
+            const adopted = onSessionSelectionRef.current?.(msg.model, sessionEffort);
+            // Adopted means this browser had no pick of its own, so the
+            // pending first message below must use the session's (normalized)
+            // model. The ref update is synchronous on purpose: it has to land
+            // before that send reads modelField().
+            if (adopted) {
+              selectionRef.current = { model: adopted.model, effort: adopted.effort };
+            }
+          }
+          readySeenRef.current = true;
           // Send a pending first message (typed straight into the threshold)
           // the moment the server says ready. Keep it pending until turnStart
           // confirms the server accepted it, so startup reconnects do not lose
           // threshold-entered prompts.
           const pending = initialMessageRef.current;
           if (pending && !initialSendInFlightRef.current && !initialSentForRef.current && ws.readyState === WebSocket.OPEN) {
+            const deliveryKey = `${expectedKey}\u0000${pending}`;
+            const delivered = initialDeliveredRef.current;
+            if (
+              delivered &&
+              delivered.key === deliveryKey &&
+              (delivered.confirmed || delivered.ws === ws)
+            ) {
+              // Already sent for this conversation. Sending again here is the
+              // duplicate-turn bug: turnStart clears the in-flight flag, so a
+              // late ready must not be allowed to replay the same prompt.
+              return;
+            }
+            if (msg.busy) {
+              // A turn is already running (usually ours: the socket died
+              // after delivery but before turnStart). Pushing the text again
+              // would queue or steer a second copy, so treat it as landed.
+              if (delivered && delivered.key === deliveryKey) delivered.confirmed = true;
+              return;
+            }
             initialSendInFlightRef.current = true;
             initialSentForRef.current = pending;
+            initialDeliveredRef.current = { key: deliveryKey, ws, confirmed: false };
             setChat((prev) => {
               if (prev.key !== expectedKey) return prev;
               const lastUser = [...prev.blocks].reverse().find((b) => b.kind === 'user');
@@ -586,6 +667,14 @@ export function useChat(opts: {
           setError(null);
         }
         else if (msg.type === 'turnStart') {
+          // The server has the threshold prompt. Keep the delivery ledger's
+          // entry in place (only confirmed now) so a later ready or effect run
+          // can never replay it; the in-flight flags below are just UI state.
+          // Only a turnStart that answers a send this socket is waiting on
+          // counts as confirmation.
+          if (initialSendInFlightRef.current && initialDeliveredRef.current) {
+            initialDeliveredRef.current.confirmed = true;
+          }
           if (initialSendInFlightRef.current) {
             initialSendInFlightRef.current = false;
             initialMessageRef.current = null;
@@ -703,6 +792,15 @@ export function useChat(opts: {
       ws.onclose = () => {
         if (!isCurrentConnection()) return;
         if (initialSendInFlightRef.current) initialSendInFlightRef.current = false;
+        // A prompt that went out on this socket but never got a turnStart may
+        // have died with it — release the ledger AND the per-message claim so
+        // the reconnect retries it. A confirmed prompt stays claimed; it must
+        // never be sent twice.
+        const delivered = initialDeliveredRef.current;
+        if (delivered && delivered.ws === ws && !delivered.confirmed) {
+          initialDeliveredRef.current = null;
+          initialSentForRef.current = null;
+        }
         pendingSendRef.current = false;
         setStatus('closed');
         const attempt = Math.min(reconnectAttemptRef.current, 3);

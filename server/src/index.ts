@@ -618,6 +618,13 @@ wss.on('connection', (ws, req) => {
         const cwdForPlan = msg.cli === 'assistant' ? ASSISTANT_HUB_PATH : msg.repo;
         const planMode = await getPlanMode(msg.cli, cwdForPlan, chatId);
         console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()} busy=${sessionBusy} plan=${planMode}`);
+        // Claude/assistant sessions are spawned at a fixed model + effort.
+        // Report them so a browser that has never seen this chat (Matt's
+        // phone) shows the model the running session actually uses instead of
+        // its own stored default. Codex/banana choose per turn, so they have
+        // nothing fixed to report.
+        const spawnedModel = (session as any).model;
+        const spawnedEffort = (session as any).effort;
         safeSend({
           type: 'ready',
           cli: msg.cli,
@@ -628,6 +635,8 @@ wss.on('connection', (ws, req) => {
           sessionKey: session.key,
           sessionId: session.sessionId(),
           planMode,
+          ...(typeof spawnedModel === 'string' ? { model: spawnedModel } : {}),
+          ...(typeof spawnedEffort === 'string' ? { effort: spawnedEffort } : {}),
         });
       } catch (e) {
         console.error(`[ws#${wsId}] hello failed:`, (e as Error).message);

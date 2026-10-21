@@ -6,6 +6,7 @@ import {
   HUBS,
   STATS,
   ASSISTANT_HUB,
+  dayPart,
   type CompanionId,
   type Repo,
   type Hub,
@@ -30,6 +31,10 @@ type ThresholdProps = {
   onToggleStar?: (path: string) => void;
   assistantEngine?: AssistantEngine;
   onAssistantEngineChange?: (e: AssistantEngine) => void;
+  /** Where to open the threshold: the agent and repo of the conversation you
+   *  came back from. Typing straight away continues there. */
+  initialCompanion?: CompanionId;
+  initialRepo?: Repo;
 };
 
 export function Threshold({
@@ -39,12 +44,16 @@ export function Threshold({
   onToggleStar,
   assistantEngine = 'claude',
   onAssistantEngineChange,
+  initialCompanion,
+  initialRepo,
 }: ThresholdProps) {
-  const [companion, setCompanion] = useState<CompanionId>('claude');
+  const [companion, setCompanion] = useState<CompanionId>(initialCompanion ?? 'claude');
   // The Assistant Hub from the live repo list, if discovered. Falls back to the constant.
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
-  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
+  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(
+    initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
+  );
   const [query, setQuery] = useState('');
   const defaultRepo = regularRepos[0];
 
@@ -164,7 +173,7 @@ export function Threshold({
         At your service, master.
         <span style={{ color: 'var(--ink-faint)' }}>
           {' '}
-          Whither shall we go this morning?
+          Whither shall we go this {dayPart()}?
         </span>
       </p>
 

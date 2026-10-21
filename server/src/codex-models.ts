@@ -6,7 +6,7 @@ export type CodexModelCapability = {
 const STANDARD_CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 const CODEX_MODEL_CAPABILITIES: Record<string, CodexModelCapability> = {
   'gpt-6.1-sol': {
-    defaultEffort: 'low',
+    defaultEffort: 'medium',
     efforts: new Set([...STANDARD_CODEX_EFFORTS, 'max', 'ultra']),
   },
   'gpt-6-astra': {

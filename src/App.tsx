@@ -24,8 +24,10 @@ import {
 import {
   normalizeClaudeEffort,
   normalizeClaudeModel,
+  readSessionClaudeSelection,
   readStoredClaudeEffort,
   readStoredClaudeModel,
+  writeSessionClaudeSelection,
   writeStoredClaudeSelection,
 } from './components/primitives/claudeModels';
 import { useLive } from './hooks/useLive';
@@ -145,6 +147,9 @@ export default function App() {
   const [companion, setCompanion] = useState<CompanionId>(initialActive?.cli ?? 'claude');
   const [repo, setRepo] = useState<Repo | undefined>(undefined);
   const restorePathRef = useRef<string | null>(initialActive?.repoPath ?? null);
+  /** A conversation was opened on the placeholder hub before /api/repos
+   *  resolved; bind it to the live hub as soon as the list lands. */
+  const pendingHubBindRef = useRef(false);
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [chronicleCollapsed, setChronicleCollapsed] = useState(readChronicleCollapsed);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
@@ -201,11 +206,42 @@ export default function App() {
     onInitialMessageSent: () => setPendingFirstMessage(null),
     model: companion === 'codex' ? codexModel
       : companion === 'banana' ? bananaModel
-      : companion === 'claude' ? claudeModel
+      // The assistant lane runs the Claude CLI, so it carries the Claude pair.
+      : companion === 'claude' || companion === 'assistant' ? claudeModel
       : undefined,
     effort: companion === 'codex' ? codexEffort
-      : companion === 'claude' ? claudeEffort
+      : companion === 'claude' || companion === 'assistant' ? claudeEffort
       : undefined,
+    // A warm Claude session already runs at a fixed model + effort. Adopt it
+    // so a browser that never made the pick (the phone) shows the truth, but
+    // never over a pick made explicitly on this device. Returns true when it
+    // adopted, which tells useChat the pending first message must go out at
+    // the session's model instead of a stale stored default (that recycle
+    // would otherwise drag the session back to the default).
+    onSessionSelection: (sessionModel, sessionEffort) => {
+      if (companion !== 'claude' && companion !== 'assistant') return null;
+      const nextModel = normalizeClaudeModel(sessionModel);
+      const nextEffort = normalizeClaudeEffort(nextModel, sessionEffort);
+      const mirror = readSessionClaudeSelection();
+      const storedModel = readStoredClaudeModel();
+      const storedEffort = readStoredClaudeEffort(storedModel);
+      const explicitPick = !!mirror.model
+        && (mirror.model !== storedModel || mirror.effort !== storedEffort);
+      if (explicitPick) {
+        // This browser holds an explicit pick (model or effort). If the
+        // session has caught up to it, resume tracking the session so later
+        // cross-device changes still follow; otherwise leave the pick alone.
+        if (nextModel === storedModel && nextEffort === storedEffort) {
+          writeSessionClaudeSelection(nextModel, nextEffort);
+        }
+        return null;
+      }
+      setClaudeModel(nextModel);
+      setClaudeEffort(nextEffort);
+      writeStoredClaudeSelection(nextModel, nextEffort);
+      writeSessionClaudeSelection(nextModel, nextEffort);
+      return { model: nextModel, effort: nextEffort };
+    },
   });
 
   // Once repos load, bind the restore-target path to a real Repo object.
@@ -236,9 +272,12 @@ export default function App() {
     if (prevStatusRef.current === 'streaming' && chat.status === 'ready') {
       setChronicleTick((t) => t + 1);
       liveBranch.refresh();
+      // The ribbon's tending/idle chip is polled every 4s. A finished turn
+      // must not keep reading "tending" next to the reply that just landed.
+      refetchLive();
     }
     prevStatusRef.current = chat.status;
-  }, [chat.status, liveBranch]);
+  }, [chat.status, liveBranch, refetchLive]);
 
   // Derive a title from the user's first message in the chat.
   useEffect(() => {
@@ -263,15 +302,36 @@ export default function App() {
     chatId?: string | null;
   }) => {
     const normalizedChatId = nextChatId || 'main';
+    // Before /api/repos resolves the threshold can only offer the placeholder
+    // hub, whose path belongs to a different machine. Opening a conversation
+    // on it makes the client expect a session key the server never uses, and
+    // every stream event gets dropped. Hold the repo instead; the effect
+    // below binds the real hub the moment the repo list lands.
+    const placeholderHub = !!r
+      && r.path === ASSISTANT_HUB.path
+      && !repos.some((known) => known.isAssistantHub);
+    pendingHubBindRef.current = placeholderHub;
+    const resolvedRepo = placeholderHub ? undefined : r;
     setCompanion(c);
-    setRepo(r);
+    setRepo(resolvedRepo);
     setChatId(normalizedChatId);
     setView('conversation');
     setErrandTitle('a fresh errand');
     setPendingFirstMessage(initialMessage ?? null);
-    if (r) writeActive({ cli: c, repoPath: r.path, chatId: normalizedChatId });
+    if (resolvedRepo) writeActive({ cli: c, repoPath: resolvedRepo.path, chatId: normalizedChatId });
     else writeActive(null);
   };
+
+  // The one conversation that can open before repos load is the Assistant
+  // lane. Bind it to the real hub as soon as the list arrives so its pending
+  // first message has somewhere real to go.
+  const liveHubRepo = repos.find((known) => known.isAssistantHub);
+  useEffect(() => {
+    if (view !== 'conversation' || !pendingHubBindRef.current || !liveHubRepo) return;
+    pendingHubBindRef.current = false;
+    setRepo(liveHubRepo);
+    writeActive({ cli: companion, repoPath: liveHubRepo.path, chatId });
+  }, [view, repo, liveHubRepo, companion, chatId]);
 
   const repoForPath = (path: string, name?: string): Repo => {
     const known = repos.find((r) => r.path === path);
@@ -341,6 +401,13 @@ export default function App() {
     writeActive(null);
   };
 
+  // Returning to the threshold should land on the agent, engine and repo the
+  // conversation was actually using, not the threshold's own defaults — typing
+  // straight away must never quietly switch to a different agent or repo.
+  const assistantHubPath = repos.find((r) => r.isAssistantHub)?.path ?? ASSISTANT_HUB.path;
+  const onAssistantHub = !!repo && (repo.isAssistantHub || repo.path === assistantHubPath);
+  const thresholdCompanion: CompanionId = onAssistantHub ? 'assistant' : companion;
+
   const branchForLabel = liveBranch.branch ?? repo?.branch;
   const repoLabel = repo
     ? `${repo.name}${branchForLabel ? ` · ${branchForLabel}` : ''}`
@@ -357,28 +424,29 @@ export default function App() {
     localStorage.setItem(CHRONICLE_COLLAPSED_KEY, chronicleCollapsed ? '1' : '0');
   }, [chronicleCollapsed]);
 
-  // Model-picker wiring for the active companion. Claude and Codex expose a
-  // model + reasoning-effort pair; Banana a model only; Assistant none.
+  // Model-picker wiring for the active companion. Claude, Codex and the
+  // assistant lane (which runs the Claude CLI) expose a model + reasoning-
+  // effort pair; Banana a model only.
   const activeModelPicker: 'banana' | 'codex' | 'claude' | undefined =
     companion === 'banana' ? 'banana'
     : companion === 'codex' ? 'codex'
-    : companion === 'claude' ? 'claude'
+    : companion === 'claude' || companion === 'assistant' ? 'claude'
     : undefined;
   const pickerModel =
     companion === 'codex' ? codexModel
-    : companion === 'claude' ? claudeModel
+    : companion === 'claude' || companion === 'assistant' ? claudeModel
     : bananaModel;
   const pickerEffort =
     companion === 'codex' ? codexEffort
-    : companion === 'claude' ? claudeEffort
+    : companion === 'claude' || companion === 'assistant' ? claudeEffort
     : undefined;
   const onPickerModelChange =
     companion === 'codex' ? changeCodexModel
-    : companion === 'claude' ? changeClaudeModel
+    : companion === 'claude' || companion === 'assistant' ? changeClaudeModel
     : setBananaModel;
   const onPickerEffortChange =
     companion === 'codex' ? changeCodexEffort
-    : companion === 'claude' ? changeClaudeEffort
+    : companion === 'claude' || companion === 'assistant' ? changeClaudeEffort
     : undefined;
 
   if (isMobile) {
@@ -399,6 +467,8 @@ export default function App() {
             onToggleTheme={toggleTheme}
             assistantEngine={assistantEngine}
             onAssistantEngineChange={setAssistantEngine}
+            initialCompanion={thresholdCompanion}
+            initialRepo={repo}
           />
         ) : (
           <MobileConversation
@@ -485,6 +555,8 @@ export default function App() {
             onToggleStar={toggleRepoStar}
             assistantEngine={assistantEngine}
             onAssistantEngineChange={setAssistantEngine}
+            initialCompanion={thresholdCompanion}
+            initialRepo={repo}
           />
         ) : (
           <Conversation

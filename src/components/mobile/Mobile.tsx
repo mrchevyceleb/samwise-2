@@ -140,6 +140,7 @@ import {
   STATS,
   CHRONICLE,
   ASSISTANT_HUB,
+  dayPart,
   type CompanionId,
   type Repo,
   type Hub,
@@ -176,6 +177,8 @@ export function MobileThreshold({
   onToggleTheme,
   assistantEngine = 'claude',
   onAssistantEngineChange,
+  initialCompanion,
+  initialRepo,
 }: {
   repos: Repo[];
   reposLoading?: boolean;
@@ -192,11 +195,17 @@ export function MobileThreshold({
   onToggleTheme?: () => void;
   assistantEngine?: MobileAssistantEngine;
   onAssistantEngineChange?: (e: MobileAssistantEngine) => void;
+  /** Where to open the threshold: the agent and repo of the conversation you
+   *  came back from. Typing straight away continues there. */
+  initialCompanion?: CompanionId;
+  initialRepo?: Repo;
 }) {
-  const [companion, setCompanion] = useState<CompanionId>('claude');
+  const [companion, setCompanion] = useState<CompanionId>(initialCompanion ?? 'claude');
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
   const regularRepos = repos.filter((r) => !r.isAssistantHub);
-  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(undefined);
+  const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(
+    initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
+  );
   const [query, setQuery] = useState('');
   const defaultRepo = regularRepos[0];
 
@@ -305,7 +314,7 @@ export function MobileThreshold({
         }}
       >
         At your service, master.
-        <span style={{ color: 'var(--ink-faint)' }}> Whither this morning?</span>
+        <span style={{ color: 'var(--ink-faint)' }}> Whither this {dayPart()}?</span>
       </p>
 
       <div style={{ display: 'flex', gap: 14, marginTop: 26, alignItems: 'center' }}>
@@ -1202,6 +1211,7 @@ export function MobileConversation({
             <CodexModelPicker
               model={model}
               effort={effort}
+              drop="up"
               onModelChange={onModelChange}
               onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
@@ -1213,6 +1223,7 @@ export function MobileConversation({
             <ClaudeModelPicker
               model={model}
               effort={effort}
+              drop="up"
               onModelChange={onModelChange}
               onEffortChange={onEffortChange}
               disabled={status === 'streaming'}
