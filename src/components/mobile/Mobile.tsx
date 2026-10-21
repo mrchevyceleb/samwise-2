@@ -168,6 +168,7 @@ const MOBILE_ASSISTANT_ENGINES: { id: MobileAssistantEngine; label: string }[] =
 export function MobileThreshold({
   repos,
   reposLoading,
+  settingForth = false,
   onSetForth,
   onToggleStar,
   liveSessions = [],
@@ -182,6 +183,8 @@ export function MobileThreshold({
 }: {
   repos: Repo[];
   reposLoading?: boolean;
+  /** A set-forth is held until the repo list resolves the live hub. */
+  settingForth?: boolean;
   onSetForth: (params: {
     companion: CompanionId;
     repo?: Repo;
@@ -676,12 +679,14 @@ export function MobileThreshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 12 }}>
-            tap to set forth
+            {settingForth ? 'setting forth · finding the hub…' : 'tap to set forth'}
           </span>
           <span style={{ marginLeft: 'auto' }} />
           <button
             className="sw-btn sw-btn-primary"
+            disabled={settingForth}
             onClick={() => {
+              if (settingForth) return;
               const text = query.trim();
               setQuery('');
               onSetForth({
@@ -698,9 +703,10 @@ export function MobileThreshold({
               fontFamily: 'var(--serif-display)',
               fontStyle: 'italic',
               minHeight: 46,
+              opacity: settingForth ? 0.65 : 1,
             }}
           >
-            Set forth ↵
+            {settingForth ? 'Setting forth…' : 'Set forth ↵'}
           </button>
         </div>
       </div>
@@ -1675,9 +1681,14 @@ function PCompanion({
         fontFamily: 'var(--serif-display)',
         fontSize: 13,
         fontWeight: 500,
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
+        lineHeight: 1.2,
+        // Short phones have room for one word per line; wrap "Claude Code"
+        // rather than clipping it to "Claude ...".
+        whiteSpace: 'normal',
+        wordBreak: 'break-word',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
         cursor: 'pointer',
       }}
     >

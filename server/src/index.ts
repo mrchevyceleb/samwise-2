@@ -375,14 +375,24 @@ wss.on('connection', (ws, req) => {
     activeSessionKey = sessionKey;
     activeSession = session;
 
-    const dispatch = (se: { seq: number; ev: any }) => {
+    const dispatch = (se: { seq: number; ev: any; ts?: number }) => {
       // Defensive: if a newer binding has taken over since this listener was
       // attached but unsubscribe hasn't run yet, drop the event.
       if (activeBindGen !== myGen) return;
       const sev = se.ev;
       const sessionId = session.sessionId();
       if (sev.type === 'event') {
-        safeSend({ type: 'stream', event: sev.event, seq: se.seq, sessionKey, sessionId, chatId });
+        safeSend({
+          type: 'stream',
+          event: sev.event,
+          seq: se.seq,
+          sessionKey,
+          sessionId,
+          chatId,
+          // Block timestamps: live events use now, replayed ones keep the
+          // moment they were emitted so a reload doesn't restamp history.
+          ts: typeof se.ts === 'number' ? se.ts : Date.now(),
+        });
       } else if (sev.type === 'turnEnd') {
         busy = false;
         // Turn completed (including after a successful auth-recovery replay) —

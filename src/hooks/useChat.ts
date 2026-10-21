@@ -40,11 +40,19 @@ const id = () => `b${nextId++}`;
 // Pure reducer — all per-turn state lives on the blocks themselves
 // (turnId + cbIndex). This keeps it safe under React Strict Mode, which
 // invokes reducers twice for purity-checking.
-function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): ChatBlock[] {
+function reduce(
+  blocks: ChatBlock[],
+  ev: any,
+  turnIdRef: { current: string },
+  /** Event time from the server envelope. Replayed history keeps the moment
+   *  each event was emitted instead of restamping it at page load. */
+  eventTs?: number,
+): ChatBlock[] {
+  const t = typeof eventTs === 'number' ? eventTs : Date.now();
   if (!ev || typeof ev !== 'object') return blocks;
 
   if (ev.type === 'stream_event' && ev.event) {
-    return reduce(blocks, ev.event, turnIdRef);
+    return reduce(blocks, ev.event, turnIdRef, eventTs);
   }
 
   // Server-injected echo of the user's prompt — keeps the user's message in
@@ -75,7 +83,7 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
     const turnId = turnIdRef.current;
     if (cb?.type === 'text') {
       const block: ChatBlock = {
-        kind: 'text', id: id(), text: '', ts: Date.now(),
+        kind: 'text', id: id(), text: '', ts: t,
         turnId, cbIndex: idx, open: true,
       };
       return [...blocks, block];
@@ -84,7 +92,7 @@ function reduce(blocks: ChatBlock[], ev: any, turnIdRef: { current: string }): C
       const block: ChatBlock = {
         kind: 'tool', id: id(),
         toolUseId: cb.id, tool: cb.name, args: '',
-        running: true, ts: Date.now(),
+        running: true, ts: t,
         turnId, cbIndex: idx, open: true,
       };
       return [...blocks, block];
@@ -718,7 +726,10 @@ export function useChat(opts: {
           setChat((prev) =>
             prev.key !== expectedKey
               ? prev
-              : { key: prev.key, blocks: reduce(prev.blocks, msg.event, turnIdRef) },
+              : {
+              key: prev.key,
+              blocks: reduce(prev.blocks, msg.event, turnIdRef, msg.ts),
+            },
           );
           // Codex and Banana are spawn-per-turn runners whose Node-side
           // runner normalizes usage onto a synthetic `result` event. Claude

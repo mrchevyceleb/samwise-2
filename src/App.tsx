@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Threshold } from './components/desktop/Threshold';
 import { Conversation } from './components/desktop/Conversation';
 import { ChronicleRibbon } from './components/desktop/ChronicleRibbon';
@@ -36,6 +36,33 @@ import { useTheme } from './hooks/useTheme';
 import { ASSISTANT_HUB } from './data/mock';
 
 type View = 'threshold' | 'conversation';
+
+/** Shown for the brief moment a restored conversation waits for the repo
+ *  list to say where it lives. Same vellum, same pulse as a live turn. */
+function MakingReady() {
+  return (
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 16,
+      }}
+    >
+      <span className="sw-thinking">
+        <span></span>
+        <span></span>
+        <span></span>
+      </span>
+      <span className="sw-folio" style={{ fontStyle: 'italic', fontSize: 13 }}>
+        making ready…
+      </span>
+    </div>
+  );
+}
 
 // Persist the active conversation across page reloads so a phone lock /
 // browser refresh / network blip lands you back where you were and the
@@ -147,9 +174,17 @@ export default function App() {
   const [companion, setCompanion] = useState<CompanionId>(initialActive?.cli ?? 'claude');
   const [repo, setRepo] = useState<Repo | undefined>(undefined);
   const restorePathRef = useRef<string | null>(initialActive?.repoPath ?? null);
-  /** A conversation was opened on the placeholder hub before /api/repos
-   *  resolved; bind it to the live hub as soon as the list lands. */
-  const pendingHubBindRef = useRef(false);
+  /** A set-forth that hit the placeholder hub before /api/repos resolved.
+   *  Held here and opened the moment the live hub arrives, so a conversation
+   *  never starts on a half-known repo (wrong title, wrong model, and a
+   *  session key the server never uses). */
+  const saddlingRef = useRef<{
+    companion: CompanionId;
+    repo?: Repo;
+    initialMessage?: string;
+    chatId: string;
+  } | null>(null);
+  const [saddling, setSaddling] = useState(false);
   const [chronicleOpen, setChronicleOpen] = useState(false);
   const [chronicleCollapsed, setChronicleCollapsed] = useState(readChronicleCollapsed);
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
@@ -247,13 +282,13 @@ export default function App() {
   // Once repos load, bind the restore-target path to a real Repo object.
   useEffect(() => {
     if (!restorePathRef.current || repo) return;
-    if (repos.length === 0) return;
     const target = repos.find((r) => r.path === restorePathRef.current);
     if (target) {
       setRepo(target);
       restorePathRef.current = null;
     } else if (!reposLoading) {
-      // Repo was removed since we saved the active session — drop it.
+      // Repo was removed since we saved the active session (or the list
+      // failed) — drop it rather than sit on a screen that can never bind.
       restorePathRef.current = null;
       writeActive(null);
       setView('threshold');
@@ -290,48 +325,75 @@ export default function App() {
     }
   }, [chat.blocks, view]);
 
-  const setForth = ({
-    companion: c,
-    repo: r,
-    initialMessage,
-    chatId: nextChatId,
-  }: {
+  const openConversation = useCallback(
+    ({
+      companion: c,
+      repo: r,
+      initialMessage,
+      chatId: nextChatId,
+    }: {
+      companion: CompanionId;
+      repo?: Repo;
+      initialMessage?: string;
+      chatId?: string | null;
+    }) => {
+      const normalizedChatId = nextChatId || 'main';
+      restorePathRef.current = null;
+      setCompanion(c);
+      setRepo(r);
+      setChatId(normalizedChatId);
+      setView('conversation');
+      setErrandTitle('a fresh errand');
+      setPendingFirstMessage(initialMessage ?? null);
+      if (r) writeActive({ cli: c, repoPath: r.path, chatId: normalizedChatId });
+      else writeActive(null);
+    },
+    [],
+  );
+
+  const setForth = (params: {
     companion: CompanionId;
     repo?: Repo;
     initialMessage?: string;
     chatId?: string | null;
   }) => {
-    const normalizedChatId = nextChatId || 'main';
+    const { companion: c, repo: r, initialMessage, chatId: nextChatId } = params;
     // Before /api/repos resolves the threshold can only offer the placeholder
     // hub, whose path belongs to a different machine. Opening a conversation
-    // on it makes the client expect a session key the server never uses, and
-    // every stream event gets dropped. Hold the repo instead; the effect
-    // below binds the real hub the moment the repo list lands.
-    const placeholderHub = !!r
-      && r.path === ASSISTANT_HUB.path
-      && !repos.some((known) => known.isAssistantHub);
-    pendingHubBindRef.current = placeholderHub;
-    const resolvedRepo = placeholderHub ? undefined : r;
-    setCompanion(c);
-    setRepo(resolvedRepo);
-    setChatId(normalizedChatId);
-    setView('conversation');
-    setErrandTitle('a fresh errand');
-    setPendingFirstMessage(initialMessage ?? null);
-    if (resolvedRepo) writeActive({ cli: c, repoPath: resolvedRepo.path, chatId: normalizedChatId });
-    else writeActive(null);
+    // on it shows an empty page under the wrong title and model, and makes the
+    // client expect a session key the server never uses (every stream event
+    // gets dropped). Hold the whole request instead; the effect below opens it
+    // the moment the real hub lands.
+    if (r && r.path === ASSISTANT_HUB.path && !repos.some((known) => known.isAssistantHub)) {
+      saddlingRef.current = {
+        companion: c,
+        repo: undefined,
+        initialMessage,
+        chatId: nextChatId || 'main',
+      };
+      setSaddling(true);
+      return;
+    }
+    openConversation({ companion: c, repo: r, initialMessage, chatId: nextChatId });
   };
 
-  // The one conversation that can open before repos load is the Assistant
-  // lane. Bind it to the real hub as soon as the list arrives so its pending
-  // first message has somewhere real to go.
+  // Release a held set-forth once the repo list settles. A live hub is the
+  // happy path; if the server never announces one, open the request as-is so
+  // the typed prompt is never stranded on the threshold.
   const liveHubRepo = repos.find((known) => known.isAssistantHub);
   useEffect(() => {
-    if (view !== 'conversation' || !pendingHubBindRef.current || !liveHubRepo) return;
-    pendingHubBindRef.current = false;
-    setRepo(liveHubRepo);
-    writeActive({ cli: companion, repoPath: liveHubRepo.path, chatId });
-  }, [view, repo, liveHubRepo, companion, chatId]);
+    const held = saddlingRef.current;
+    if (!held) return;
+    if (liveHubRepo) {
+      saddlingRef.current = null;
+      setSaddling(false);
+      openConversation({ ...held, repo: liveHubRepo });
+    } else if (!reposLoading) {
+      saddlingRef.current = null;
+      setSaddling(false);
+      openConversation(held);
+    }
+  }, [liveHubRepo, reposLoading, openConversation]);
 
   const repoForPath = (path: string, name?: string): Repo => {
     const known = repos.find((r) => r.path === path);
@@ -420,6 +482,11 @@ export default function App() {
 
   const appClass = `sw-app sw-paper${theme === 'dark' ? ' sw-dark' : ''}`;
 
+  // Restoring a saved conversation before /api/repos resolves: the repo (and
+  // so the title, model and session key) is not known yet. Show an honest
+  // "making ready" instead of an empty conversation under a wrong heading.
+  const awaitingRestore = view === 'conversation' && !repo && restorePathRef.current !== null;
+
   useEffect(() => {
     localStorage.setItem(CHRONICLE_COLLAPSED_KEY, chronicleCollapsed ? '1' : '0');
   }, [chronicleCollapsed]);
@@ -469,7 +536,10 @@ export default function App() {
             onAssistantEngineChange={setAssistantEngine}
             initialCompanion={thresholdCompanion}
             initialRepo={repo}
+            settingForth={saddling}
           />
+        ) : awaitingRestore ? (
+          <MakingReady />
         ) : (
           <MobileConversation
             agent={COMPANION_LABEL[companion]}
@@ -557,7 +627,10 @@ export default function App() {
             onAssistantEngineChange={setAssistantEngine}
             initialCompanion={thresholdCompanion}
             initialRepo={repo}
+            settingForth={saddling}
           />
+        ) : awaitingRestore ? (
+          <MakingReady />
         ) : (
           <Conversation
             agent={COMPANION_LABEL[companion]}

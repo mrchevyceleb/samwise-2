@@ -122,7 +122,7 @@ const EVENT_BUFFER_SIZE = 2000;
 // reattach to the warm process; longer than that we give back the resources.
 export const IDLE_TTL_MS = 30 * 60 * 1000;
 
-export type SeqEvent = { seq: number; ev: SessionEvent };
+export type SeqEvent = { seq: number; ev: SessionEvent; /** wall-clock ms when the event was emitted; replayed so block timestamps survive restarts */ ts?: number };
 
 class ClaudeSession {
   readonly key: string;
@@ -526,7 +526,7 @@ class ClaudeSession {
 
   private emit(msg: SessionEvent): void {
     this.lastActivityAtMs = Date.now();
-    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg, ts: Date.now() };
     this.eventLog.push(se);
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);

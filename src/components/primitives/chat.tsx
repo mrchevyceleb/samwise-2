@@ -750,6 +750,7 @@ export function ChatInput({
   placeholder = 'Speak, master.',
   agent = 'Claude Code',
   repo = '',
+  picker,
   acceptImages = true,
 }: {
   value?: string;
@@ -765,6 +766,9 @@ export function ChatInput({
   placeholder?: string;
   agent?: string;
   repo?: string;
+  /** Model / effort picker slot. Lives in the composer header so it stays on
+   *  screen however far the thread scrolls. */
+  picker?: ReactNode;
   acceptImages?: boolean;
 }) {
   const [internal, setInternal] = useState(value ?? '');
@@ -910,6 +914,11 @@ export function ChatInput({
               {repo}
             </span>
           </>
+        )}
+        {picker && (
+          <span style={{ display: 'inline-flex', flexShrink: 0, marginLeft: 2 }}>
+            {picker}
+          </span>
         )}
         <span
           style={{ marginLeft: 'auto', whiteSpace: 'nowrap' }}

@@ -430,7 +430,7 @@ export class CodexSession {
 
   private emit(msg: SessionEvent): void {
     this.lastActivityAtMs = Date.now();
-    const se: SeqEvent = { seq: this.nextSeq++, ev: msg };
+    const se: SeqEvent = { seq: this.nextSeq++, ev: msg, ts: Date.now() };
     this.eventLog.push(se);
     if (this.eventLog.length > EVENT_BUFFER_SIZE) {
       this.eventLog.splice(0, this.eventLog.length - EVENT_BUFFER_SIZE);

@@ -23,6 +23,8 @@ const ASSISTANT_ENGINES: { id: AssistantEngine; label: string }[] = [
 type ThresholdProps = {
   repos: Repo[];
   reposLoading?: boolean;
+  /** A set-forth is held until the repo list resolves the live hub. */
+  settingForth?: boolean;
   onSetForth: (params: {
     companion: CompanionId;
     repo?: Repo;
@@ -40,6 +42,7 @@ type ThresholdProps = {
 export function Threshold({
   repos,
   reposLoading,
+  settingForth = false,
   onSetForth,
   onToggleStar,
   assistantEngine = 'claude',
@@ -416,18 +419,25 @@ export function Threshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic' }}>
-            ↵ to set forth · ⌘ + ↑/↓ to walk through
+            {settingForth ? 'setting forth · finding the hub…' : '↵ to set forth · ⌘ + ↑/↓ to walk through'}
           </span>
           <span style={{ marginLeft: 'auto' }}></span>
           <button
             className="sw-btn sw-btn-primary"
-            style={{ fontSize: 16, padding: '10px 24px' }}
+            disabled={settingForth}
+            style={{
+              fontSize: 16,
+              padding: '10px 24px',
+              opacity: settingForth ? 0.65 : 1,
+              cursor: settingForth ? 'default' : 'pointer',
+            }}
             onClick={() => {
+              if (settingForth) return;
               setForth(query.trim() || undefined);
               setQuery('');
             }}
           >
-            Set forth
+            {settingForth ? 'Setting forth…' : 'Set forth'}
           </button>
         </div>
       </div>

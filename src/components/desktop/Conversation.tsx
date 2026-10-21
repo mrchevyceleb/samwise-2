@@ -217,31 +217,6 @@ export function Conversation({
                 {planMode ? 'plan mode · on' : 'plan mode · off'}
               </button>
             )}
-            {modelPicker === 'banana' && onModelChange && model && (
-              <BananaModelPicker
-                value={model}
-                onChange={onModelChange}
-                disabled={status === 'streaming'}
-              />
-            )}
-            {modelPicker === 'codex' && onModelChange && onEffortChange && model && effort && (
-              <CodexModelPicker
-                model={model}
-                effort={effort}
-                onModelChange={onModelChange}
-                onEffortChange={onEffortChange}
-                disabled={status === 'streaming'}
-              />
-            )}
-            {modelPicker === 'claude' && onModelChange && onEffortChange && model && effort && (
-              <ClaudeModelPicker
-                model={model}
-                effort={effort}
-                onModelChange={onModelChange}
-                onEffortChange={onEffortChange}
-                disabled={status === 'streaming'}
-              />
-            )}
           </div>
           {(onBack || onFreshStart || usage || (onStop && status === 'streaming')) && (
             <div
@@ -367,6 +342,37 @@ export function Conversation({
           <ChatInput
             agent={agent}
             repo={repo}
+            // The model lives beside the composer, not up in the title area:
+            // the thread can run thousands of pixels past the header, and a
+            // picker Matt has to scroll to the top to find is a picker he
+            // cannot use mid-chat.
+            picker={
+              modelPicker === 'banana' && onModelChange && model ? (
+                <BananaModelPicker
+                  value={model}
+                  onChange={onModelChange}
+                  disabled={status === 'streaming'}
+                />
+              ) : modelPicker === 'codex' && onModelChange && onEffortChange && model && effort ? (
+                <CodexModelPicker
+                  model={model}
+                  effort={effort}
+                  drop="up"
+                  onModelChange={onModelChange}
+                  onEffortChange={onEffortChange}
+                  disabled={status === 'streaming'}
+                />
+              ) : modelPicker === 'claude' && onModelChange && onEffortChange && model && effort ? (
+                <ClaudeModelPicker
+                  model={model}
+                  effort={effort}
+                  drop="up"
+                  onModelChange={onModelChange}
+                  onEffortChange={onEffortChange}
+                  disabled={status === 'streaming'}
+                />
+              ) : undefined
+            }
             placeholder="speak, master…"
             onSend={onSend}
             onSteer={onSteer}
