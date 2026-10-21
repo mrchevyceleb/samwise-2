@@ -379,7 +379,7 @@ export function Conversation({
                 />
               ) : undefined
             }
-            onCompact={modelPicker === 'claude' ? onCompact : undefined}
+            onCompact={modelPicker === 'claude' || modelPicker === 'codex' ? onCompact : undefined}
             compactBusy={compactBusy}
             placeholder="speak, master…"
             onSend={onSend}

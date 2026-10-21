@@ -798,6 +798,18 @@ export function useChat(opts: {
               blocks: reduce(prev.blocks, msg.event, turnIdRef, msg.ts),
             },
           );
+          // A compact replayed from the event log (reconnect, second tab) must
+          // re-arm the latch and the generous watchdog too, not just the tab
+          // that clicked it. The matching result is what releases both.
+          if (msg.event?.type === '_compact') {
+            compactingRef.current = true;
+            compactConfirmedRef.current = true;
+            setCompacting(true);
+          } else if (msg.event?.type === 'result' && compactingRef.current) {
+            compactingRef.current = false;
+            compactConfirmedRef.current = false;
+            setCompacting(false);
+          }
           // Codex and Banana are spawn-per-turn runners whose Node-side
           // runner normalizes usage onto a synthetic `result` event. Claude
           // (and the Assistant) emit per-call usage on `assistant.message`.
@@ -1056,7 +1068,7 @@ export function useChat(opts: {
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
     if (!repo) return;
-    if (cli === 'claude' || cli === 'assistant') {
+    if (cli === 'claude' || cli === 'assistant' || cli === 'codex') {
       const m = text.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
       if (m) {
         // Images are irrelevant to a summary; the command path never sends
@@ -1064,6 +1076,12 @@ export function useChat(opts: {
         compact(m[1].trim() || undefined);
         return;
       }
+    }
+    // The server rejects a send during the compact's setup window; say so
+    // here first so the words are not silently swallowed.
+    if (compactingRef.current) {
+      setError('Sam is compacting. One moment, then send.');
+      return;
     }
     const ws = wsRef.current;
     const expectedKey = conversationKey(cli, repo.path, chatId);
@@ -1111,12 +1129,16 @@ export function useChat(opts: {
     images?: Array<{ mediaType: string; base64: string }>,
   ) => {
     if (!repo) return;
-    if (cli === 'claude' || cli === 'assistant') {
+    if (cli === 'claude' || cli === 'assistant' || cli === 'codex') {
       const m = text.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
       if (m) {
         compact(m[1].trim() || undefined);
         return;
       }
+    }
+    if (compactingRef.current) {
+      setError('Sam is compacting. One moment, then send.');
+      return;
     }
     const ws = wsRef.current;
     const expectedKey = conversationKey(cli, repo.path, chatId);

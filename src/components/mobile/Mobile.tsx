@@ -381,7 +381,18 @@ export function MobileThreshold({
         <span style={{ color: 'var(--ink-faint)' }}> Whither this {dayPart()}?</span>
       </p>
 
-      <div style={{ display: 'flex', gap: 14, marginTop: 26, alignItems: 'center' }}>
+      <div className="sw-ticker" aria-hidden style={{ marginTop: 22, width: '100%' }}>
+        <span className="sw-ticker-track sw-folio" style={{ fontStyle: 'italic', fontSize: 11 }}>
+          {Array.from({ length: 2 }).map((_, i) => (
+            <span key={i}>
+              {' '}say a repo's name to set forth · /compact keeps a long chat light ·
+              {' '}tap a shelf below · ✦ ·{' '}
+            </span>
+          ))}
+        </span>
+      </div>
+
+      <div style={{ display: 'flex', gap: 14, marginTop: 20, alignItems: 'center' }}>
         <PStat n={STATS.underway} l="underway" tone="ember" />
         <span style={{ width: 1, height: 38, background: 'var(--rule-soft)' }} />
         <PStat n={STATS.awaits} l="awaits" tone="gold" />
@@ -551,15 +562,13 @@ export function MobileThreshold({
             // repo until the list lands, and a repo-less thread cannot send.
             if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
             const text = query.trim();
-            // A typed repo name is always a repo pick, whatever is selected:
-            // an exact name first ("operly" beside "operly-support"), then an
-            // unambiguous single match. It can never land as a message in a
-            // thread the user did not choose.
+            // A typed repo name (an exact name) is always a repo pick, whatever
+            // is selected, so it can never land as a message in a thread the
+            // user did not choose. Substrings are left to the filter below;
+            // taking them as picks swallowed real one-word messages.
             if (effectiveCompanion !== 'assistant') {
               const q = text.toLowerCase();
-              const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
-              const loose = regularRepos.filter((r) => r.name.toLowerCase().includes(q));
-              const pick = exact ?? (loose.length === 1 ? loose[0] : undefined);
+              const pick = regularRepos.find((r) => r.name.toLowerCase() === q);
               if (pick) {
                 setSelectedRepo(pick);
                 setQuery('');
@@ -591,6 +600,7 @@ export function MobileThreshold({
           <SearchGlyph size={16} />
           <input
             type="search"
+            className="sw-palette-search"
             enterKeyHint="send"
             inputMode="text"
             value={query}
@@ -601,6 +611,7 @@ export function MobileThreshold({
             placeholder="speak, or pick below…"
             style={{
               flex: 1,
+              minWidth: 0,
               border: 0,
               outline: 'none',
               background: 'transparent',
@@ -1063,6 +1074,8 @@ export function MobileConversation({
       if (m) {
         onCompact(m[1].trim() || undefined);
         setDraft('');
+        for (const i of pendingImages) URL.revokeObjectURL(i.previewUrl);
+        setPendingImages([]);
         return;
       }
     }

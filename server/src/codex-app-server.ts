@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import readline from 'node:readline';
 
 // Codex has no `/compact` in `exec` mode, but its app server does expose the
@@ -16,6 +16,8 @@ type JsonRpcMessage = {
 };
 
 export type CodexCompactResult = {
+  /** Context size before compaction, in tokens, when the server reports it. */
+  preTokens?: number;
   /** Context size after compaction, in tokens, when the server reports it. */
   postTokens?: number;
 };
@@ -25,17 +27,22 @@ export class CodexAppServerError extends Error {}
 const COMPACT_START_TIMEOUT_MS = 30_000;
 const COMPACT_FINISH_TIMEOUT_MS = 180_000;
 const KILL_GRACE_MS = 3_000;
+const KILL_WAIT_MS = 5_000;
 
 /**
  * Compact one Codex thread in place. Resolves once Codex reports the
  * compaction item completed; the thread keeps its id and its memory of the
- * conversation (as a summary).
+ * conversation (as a summary). `signal` aborts the whole thing (chat stopped,
+ * server shutting down) and always cleans up the child.
  */
 export async function compactCodexThread(
   threadId: string,
   cwd: string,
+  signal?: AbortSignal,
 ): Promise<CodexCompactResult> {
-  const child = spawn('codex', ['app-server'], {
+  if (signal?.aborted) throw new CodexAppServerError('compact cancelled');
+
+  const child: ChildProcessWithoutNullStreams = spawn('codex', ['app-server'], {
     cwd,
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -48,17 +55,43 @@ export async function compactCodexThread(
 
   let nextId = 1;
   const pending = new Map<number, (msg: JsonRpcMessage) => void>();
+  let preTokens: number | undefined;
   let postTokens: number | undefined;
-  let finished = false;
+  let compactAcked = false;
+  let exited = false;
+  let exitCode: number | null = null;
+  let exitSignal: NodeJS.Signals | null = null;
+  let failure: Error | null = null;
   let finishResolve: (() => void) | null = null;
   const finishedPromise = new Promise<void>((resolve) => {
     finishResolve = resolve;
   });
-  const markFinished = () => {
-    if (finished) return;
-    finished = true;
+
+  const exitHandlers = new Set<() => void>();
+  const failAll = (err: Error) => {
+    if (failure) return;
+    failure = err;
+    for (const fn of pending.values()) fn({ error: { message: err.message } });
+    pending.clear();
     finishResolve?.();
+    for (const fn of exitHandlers) fn();
   };
+
+  const onExit = (code: number | null, sig: NodeJS.Signals | null) => {
+    exited = true;
+    exitCode = code;
+    exitSignal = sig;
+    const tail = stderrTail.trim().split('\n').slice(-3).join(' | ');
+    failAll(new CodexAppServerError(
+      `codex app-server exited (${sig ?? code ?? 'unknown'})${tail ? `: ${tail}` : ''}`,
+    ));
+  };
+  child.on('exit', onExit);
+  child.on('close', (code, sig) => { if (!exited) onExit(code, sig); });
+  // A spawn failure (codex missing) or a broken pipe must never crash the
+  // server: fail this compact and let the chat report it.
+  child.on('error', (err) => failAll(new CodexAppServerError(`codex app-server failed: ${err.message}`)));
+  child.stdin.on('error', (err) => failAll(new CodexAppServerError(`codex app-server pipe failed: ${err.message}`)));
 
   const rl = readline.createInterface({ input: child.stdout });
   rl.on('line', (line) => {
@@ -68,7 +101,9 @@ export async function compactCodexThread(
     } catch {
       return;
     }
-    if (msg.id !== undefined && pending.has(Number(msg.id))) {
+    // A response never carries a method; anything with one is a server
+    // notification or a server-initiated request, whatever its id.
+    if (msg.method === undefined && msg.id !== undefined && pending.has(Number(msg.id))) {
       pending.get(Number(msg.id))!(msg);
       pending.delete(Number(msg.id));
       return;
@@ -80,19 +115,29 @@ export async function compactCodexThread(
         }
       | undefined;
     if (msg.method === 'item/completed' && params?.item?.type === 'contextCompaction') {
-      markFinished();
+      finishResolve?.();
     } else if (msg.method === 'thread/tokenUsage/updated') {
       const last = params?.tokenUsage?.last?.totalTokens;
-      if (typeof last === 'number' && last > 0) postTokens = last;
-    } else if (msg.method === 'turn/completed') {
+      if (typeof last === 'number' && last > 0) {
+        // Usage before compaction/start is acknowledged is the "before" size;
+        // after it, the "after" size. Reading them the other way round made
+        // the chip claim the thread was never shrunk.
+        if (compactAcked) postTokens = last;
+        else preTokens = last;
+      }
+    } else if (msg.method === 'turn/completed' && compactAcked) {
       // Covers an app-server build that finishes without the item event.
-      markFinished();
+      finishResolve?.();
     }
   });
 
   const send = (obj: Record<string, unknown>) => {
-    if (child.stdin.destroyed) return;
-    child.stdin.write(JSON.stringify(obj) + '\n');
+    if (child.stdin.destroyed || child.stdin.writableEnded) return;
+    try {
+      child.stdin.write(JSON.stringify(obj) + '\n');
+    } catch (err) {
+      failAll(new CodexAppServerError(`codex app-server pipe failed: ${(err as Error).message}`));
+    }
   };
 
   const request = (method: string, params: Record<string, unknown>, timeoutMs: number) =>
@@ -110,18 +155,19 @@ export async function compactCodexThread(
       send({ jsonrpc: '2.0', id, method, params });
     });
 
-  const kill = async () => {
-    if (child.exitCode !== null) return;
-    child.kill('SIGTERM');
-    const grace = setTimeout(() => {
-      if (child.exitCode === null) child.kill('SIGKILL');
-    }, KILL_GRACE_MS);
-    grace.unref?.();
-    await new Promise<void>((resolve) => {
-      if (child.exitCode !== null) return resolve();
-      child.once('exit', () => resolve());
+  const waitForExit = () => new Promise<void>((resolve) => {
+    if (exited || exitCode !== null || exitSignal !== null) return resolve();
+    const done = () => { clearTimeout(cap); resolve(); };
+    const cap = setTimeout(done, KILL_WAIT_MS);
+    cap.unref?.();
+    exitHandlers.add(function onExitWait() {
+      exitHandlers.delete(onExitWait);
+      done();
     });
-  };
+  });
+
+  const onAbort = () => failAll(new CodexAppServerError('compact cancelled'));
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     const init = await request(
@@ -141,6 +187,7 @@ export async function compactCodexThread(
       COMPACT_START_TIMEOUT_MS,
     );
     if (start.error) throw new CodexAppServerError(start.error.message ?? 'compact failed');
+    compactAcked = true;
 
     const timedOut = await Promise.race([
       finishedPromise.then(() => false),
@@ -149,16 +196,24 @@ export async function compactCodexThread(
         t.unref?.();
       }),
     ]);
-    if (timedOut) {
-      throw new CodexAppServerError('codex did not finish compacting');
-    }
-    return { postTokens };
+    if (failure) throw failure;
+    if (timedOut) throw new CodexAppServerError('codex did not finish compacting');
+    return { preTokens, postTokens };
   } catch (err) {
     const tail = stderrTail.trim().split('\n').slice(-3).join(' | ');
     const message = err instanceof Error ? err.message : String(err);
     throw new CodexAppServerError(tail ? `${message} (${tail})` : message);
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     rl.close();
-    await kill();
+    if (!exited && exitCode === null && exitSignal === null) {
+      child.kill('SIGTERM');
+      const grace = setTimeout(() => {
+        if (!exited && exitCode === null && exitSignal === null) child.kill('SIGKILL');
+      }, KILL_GRACE_MS);
+      grace.unref?.();
+      await waitForExit();
+      clearTimeout(grace);
+    }
   }
 }

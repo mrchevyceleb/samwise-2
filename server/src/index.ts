@@ -326,6 +326,10 @@ wss.on('connection', (ws, req) => {
   let sessionPromise: Promise<AnySession> | null = null;
   let unsubscribe: (() => void) | null = null;
   let busy = false;
+  /** A compact was accepted on this socket but its turnStart has not landed
+   *  yet. Without this, a message sent in that gap reaches the session after
+   *  /compact and the two turns interleave. */
+  let compacting = false;
   let cliKind: CliKind | null = null;
   let repoPath: string | null = null;
   let chatId = DEFAULT_CHAT_ID;
@@ -496,6 +500,7 @@ wss.on('connection', (ws, req) => {
         }
         sessionPromise = null;
         busy = false;
+        compacting = false;
         activeSessionKey = null;
         activeSession = null;
         unsubscribe?.();
@@ -644,11 +649,11 @@ wss.on('connection', (ws, req) => {
         const cwdForPlan = msg.cli === 'assistant' ? ASSISTANT_HUB_PATH : msg.repo;
         const planMode = await getPlanMode(msg.cli, cwdForPlan, chatId);
         console.log(`[ws#${wsId}] session ready key=${session.key} latestSeq=${session.latestSeq()} busy=${sessionBusy} plan=${planMode}`);
-        // Claude/assistant sessions are spawned at a fixed model + effort.
-        // Report them so a browser that has never seen this chat (Matt's
-        // phone) shows the model the running session actually uses instead of
-        // its own stored default. Codex/banana choose per turn, so they have
-        // nothing fixed to report.
+        // Claude/assistant sessions are spawned at a fixed model + effort;
+        // Codex reports the model its last turn actually ran. Report either so
+        // a browser that has never seen this chat (Matt's phone) shows the
+        // truth instead of its own stored default. Banana has no effort
+        // ladder and reports nothing.
         const spawnedModel = (session as any).model;
         const spawnedEffort = (session as any).effort;
         safeSend({
@@ -674,6 +679,10 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'steer') {
       console.log(`[ws#${wsId}] steer cli=${msg.cli} bytes=${msg.text.length}`);
+      if (compacting) {
+        safeSend({ type: 'error', message: 'Sam is compacting. One moment, then send.' });
+        return;
+      }
       try {
         turnGeneration += 1;
         chatId = normalizeChatId(msg.chatId ?? chatId);
@@ -761,11 +770,14 @@ wss.on('connection', (ws, req) => {
         safeSend({ type: 'error', message: 'this companion cannot compact a chat' });
         return;
       }
-      if (busy) {
+      if (busy || compacting) {
         console.log(`[ws#${wsId}] compact rejected: socket busy`);
         safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
         return;
       }
+      // Claim the gap before the awaits. Released the moment turnStart makes
+      // `busy` true, or on any failure below.
+      compacting = true;
       if (!sessionPromise && cliKind && repoPath) {
         try {
           await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
@@ -775,6 +787,7 @@ wss.on('connection', (ws, req) => {
         }
       }
       if (!sessionPromise) {
+        compacting = false;
         safeSend({ type: 'error', message: 'no session, send hello first' });
         return;
       }
@@ -792,6 +805,7 @@ wss.on('connection', (ws, req) => {
         // the shared stdin then would land inside their turn.
         if ((session as { isBusy?: () => boolean }).isBusy?.() === true) {
           console.log(`[ws#${wsId}] compact rejected: session busy`);
+          compacting = false;
           safeSend({ type: 'error', message: 'Sam is mid-turn. Let him finish, then compact.' });
           return;
         }
@@ -814,6 +828,7 @@ wss.on('connection', (ws, req) => {
             if (!rebound) {
               // A newer bind superseded us and owns the socket now. Say so:
               // a silent return leaves the client's compact latch closed.
+              compacting = false;
               safeSend({ type: 'error', message: 'the conversation changed hands. Compact again.' });
               return;
             }
@@ -822,6 +837,7 @@ wss.on('connection', (ws, req) => {
         }
         turnGeneration += 1;
         busy = true;
+        compacting = false;
         safeSend({
           type: 'turnStart',
           sessionKey: session.key,
@@ -835,6 +851,7 @@ wss.on('connection', (ws, req) => {
         }
       } catch (e) {
         busy = false;
+        compacting = false;
         safeSend({ type: 'error', message: String((e as Error).message) });
         if (activeSessionKey) {
           safeSend({ type: 'turnEnd', sessionKey: activeSessionKey, sessionId: currentSessionId(), chatId });
@@ -930,6 +947,10 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'send') {
       const imageCount = msg.images?.length ?? 0;
       console.log(`[ws#${wsId}] send cli=${cliKind} bytes=${msg.text.length} images=${imageCount}`);
+      if (compacting) {
+        safeSend({ type: 'error', message: 'Sam is compacting. One moment, then send.' });
+        return;
+      }
       const requestedChatId = normalizeChatId(msg.chatId ?? chatId);
       if (requestedChatId !== chatId) {
         safeSend({ type: 'error', message: 'chat changed, reconnect before sending' });

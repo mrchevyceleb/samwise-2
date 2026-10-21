@@ -130,8 +130,9 @@ export class CodexSession {
    *  browser so its picker shows the truth rather than a stale default. */
   model: string | null = null;
   effort: string | null = null;
-  /** Context size of the last finished turn, so a compact can show the drop. */
-  private lastContextTokens: number | null = null;
+  /** Aborts an in-flight manual compaction's app-server child when the chat
+   *  is stopped or the server shuts down. */
+  private compactionAbort: AbortController | null = null;
   private dead = false;
   private currentChild: ChildProcess | null = null;
   /** Set by shutdown() before SIGTERM so the in-flight send()'s close handler
@@ -222,6 +223,7 @@ export class CodexSession {
     if (this.dead) return;
     this.dead = true;
     this.disarmIdleTimer();
+    this.compactionAbort?.abort();
     const child = this.currentChild;
     if (child && child.exitCode === null) {
       this.intentionalKill = true;
@@ -260,21 +262,21 @@ export class CodexSession {
       return;
     }
     this.busy = true;
+    const abort = new AbortController();
+    this.compactionAbort = abort;
     this.emitClaudeEvent({ type: '_compact', ts: Date.now() });
     try {
-      const { postTokens } = await compactCodexThread(this.threadId, this.cwd);
-      const pre = this.lastContextTokens ?? undefined;
+      const { preTokens, postTokens } = await compactCodexThread(this.threadId, this.cwd, abort.signal);
       this.emitClaudeEvent({
         type: 'system',
         subtype: 'compact_boundary',
         session_id: this.threadId,
         compact_metadata: {
           trigger: 'manual',
-          ...(typeof pre === 'number' ? { pre_tokens: pre } : {}),
+          ...(typeof preTokens === 'number' ? { pre_tokens: preTokens } : {}),
           ...(typeof postTokens === 'number' ? { post_tokens: postTokens } : {}),
         },
       });
-      if (typeof postTokens === 'number') this.lastContextTokens = postTokens;
       this.emitClaudeEvent({
         type: 'result',
         subtype: 'success',
@@ -302,6 +304,7 @@ export class CodexSession {
       });
     } finally {
       this.busy = false;
+      if (this.compactionAbort === abort) this.compactionAbort = null;
       this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
     }
   }
@@ -664,9 +667,6 @@ export class CodexSession {
       const cached = Number(u.cached_input_tokens ?? 0);
       const output = Number(u.output_tokens ?? 0);
       const effectiveInput = cached > 0 && cached < input ? input - cached : input;
-      // Full input is the conversation's context size, which is what a
-      // compaction shrinks. Keep it for the divider's "before" figure.
-      this.lastContextTokens = Math.max(0, input);
       state.usage = {
         // Codex reports huge cumulative cache-read counts. For the context
         // meter, show the effective fresh input instead of reconstructing the

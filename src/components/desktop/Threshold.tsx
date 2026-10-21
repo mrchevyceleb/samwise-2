@@ -99,17 +99,13 @@ export function Threshold({
       ? assistantEngine
       : companion;
 
-  /** The repo a typed name points at, if any. An exact name always wins, even
-   *  when a dozen other repos contain it as a substring ("operly" beside
-   *  "operly-support"); otherwise only an unambiguous single match counts.
-   *  Returns undefined when the text is a message, not a repo name. */
+  /** The repo a typed name points at: an exact name only. A substring rule
+   *  swallowed real one-word messages ("test", "fix", "status") whenever a
+   *  repo happened to contain them, and opened a thread the user never chose. */
   const typedRepo = (text: string): Repo | undefined => {
     const q = text.trim().toLowerCase();
     if (!q) return undefined;
-    const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
-    if (exact) return exact;
-    const loose = regularRepos.filter((r) => r.name.toLowerCase().includes(q));
-    return loose.length === 1 ? loose[0] : undefined;
+    return regularRepos.find((r) => r.name.toLowerCase() === q);
   };
 
   const setForth = (initialMessage?: string) => {
@@ -117,7 +113,7 @@ export function Threshold({
     // was typed. Opening now would land in a thread with no repo, where the
     // typed message can never be sent. Keep it on the threshold; the list is
     // a fraction of a second away.
-    if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
+    if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return false;
     if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
       // A name typed with no repo chosen is a repo pick, not a message.
       const pick = typedRepo(query.trim() || initialMessage || '');
@@ -126,25 +122,28 @@ export function Threshold({
         setQuery('');
         setHint(null);
         onSetForth({ companion: effectiveCompanion, repo: pick });
-        return;
+        return true;
       }
       setHint('pick a repo below first, then set forth');
-      return;
+      return false;
     }
     setHint(null);
     onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage });
+    return true;
   };
 
-  const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key !== 'Enter' || !query.trim()) return;
+  /** One rule for Enter and for the Set forth button: a typed repo name picks
+   *  that repo, anything else becomes the first message for the repo shown in
+   *  the destination chip. The box is only cleared when something opened. */
+  const submitQuery = () => {
     if (settingForth) return;
-    e.preventDefault();
-    // A typed repo name is always a repo pick, whatever is highlighted, so a
-    // name can never land as a message in someone else's thread. Anything
-    // else is the first message, and the destination chip beside the search
-    // box says which repo it goes to.
+    const text = query.trim();
+    if (!text) {
+      setForth(undefined);
+      return;
+    }
     if (companion !== 'assistant') {
-      const pick = typedRepo(query);
+      const pick = typedRepo(text);
       if (pick) {
         setSelectedRepo(pick);
         setQuery('');
@@ -153,8 +152,13 @@ export function Threshold({
         return;
       }
     }
-    setForth(query.trim());
-    setQuery('');
+    if (setForth(text)) setQuery('');
+  };
+
+  const handleSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter' || !query.trim()) return;
+    e.preventDefault();
+    submitQuery();
   };
 
   return (
@@ -229,6 +233,16 @@ export function Threshold({
           Whither shall we go this {dayPart()}?
         </span>
       </p>
+      <div className="sw-ticker" aria-hidden style={{ marginTop: 26, width: '100%', maxWidth: 960 }}>
+        <span className="sw-ticker-track sw-folio" style={{ fontStyle: 'italic', fontSize: 11.5 }}>
+          {Array.from({ length: 2 }).map((_, i) => (
+            <span key={i}>
+              {' '}say a repo's name to set forth · /compact keeps a long chat light ·
+              {' '}⌘K switches companion · ✦ ·{' '}
+            </span>
+          ))}
+        </span>
+      </div>
 
       {/* Stats strip */}
       <div style={{ display: 'flex', gap: 24, marginTop: 40, alignItems: 'center' }}>
@@ -525,22 +539,12 @@ export function Threshold({
             }}
             onClick={() => {
               if (settingForth) return;
-              setForth(query.trim() || undefined);
-              setQuery('');
+              if (query.trim()) submitQuery();
+              else setForth(undefined);
             }}
           >
             {settingForth ? 'Setting forth…' : 'Set forth'}
           </button>
-        </div>
-        <div className="sw-ticker" aria-hidden>
-          <span className="sw-ticker-track sw-folio" style={{ fontStyle: 'italic', fontSize: 11.5 }}>
-            {Array.from({ length: 2 }).map((_, i) => (
-              <span key={i}>
-                {' '}say a repo's name to set forth · /compact keeps a long chat light ·
-                {' '}⌘K switches companion · ✦ ·{' '}
-              </span>
-            ))}
-          </span>
         </div>
       </div>
 

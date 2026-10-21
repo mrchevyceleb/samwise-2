@@ -213,6 +213,9 @@ export default function App() {
   /** True once the picker is touched in this view. A late first `ready` must
    *  never adopt over a pick the user just made. */
   const userPickedRef = useRef(false);
+  /** Per-chat picks are stored under the lane that owns the picker. The
+   *  assistant lane shows the Claude picker, so it shares Claude's memory. */
+  const pickLane = (c: CompanionId): string => (c === 'assistant' ? 'claude' : c);
   const changeCodexModel = (value: string) => {
     userPickedRef.current = true;
     const model = normalizeCodexModel(value);
@@ -220,14 +223,14 @@ export default function App() {
     setCodexModel(model);
     setCodexEffort(effort);
     writeStoredCodexSelection(model, effort);
-    writeChatPick('codex', repo?.path, chatId, model, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, model, effort);
   };
   const changeCodexEffort = (value: string) => {
     userPickedRef.current = true;
     const effort = normalizeCodexEffort(codexModel, value);
     setCodexEffort(effort);
     writeStoredCodexSelection(codexModel, effort);
-    writeChatPick('codex', repo?.path, chatId, codexModel, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, codexModel, effort);
   };
   const [claudeModel, setClaudeModel] = useState<string>(readStoredClaudeModel);
   const [claudeEffort, setClaudeEffort] = useState<string>(
@@ -240,14 +243,14 @@ export default function App() {
     setClaudeModel(model);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(model, effort);
-    writeChatPick('claude', repo?.path, chatId, model, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, model, effort);
   };
   const changeClaudeEffort = (value: string) => {
     userPickedRef.current = true;
     const effort = normalizeClaudeEffort(claudeModel, value);
     setClaudeEffort(effort);
     writeStoredClaudeSelection(claudeModel, effort);
-    writeChatPick('claude', repo?.path, chatId, claudeModel, effort);
+    writeChatPick(pickLane(companion), repo?.path, chatId, claudeModel, effort);
   };
   const [assistantEngine, setAssistantEngineState] = useState<AssistantEngine>(readAssistantEngine);
   const setAssistantEngine = (e: AssistantEngine) => {
@@ -332,8 +335,21 @@ export default function App() {
   useEffect(() => {
     userPickedRef.current = false;
     if (!repo?.path) return;
-    const pick = readChatPick(companion, repo.path, chatId);
-    if (!pick) return;
+    const pick = readChatPick(pickLane(companion), repo.path, chatId);
+    if (!pick) {
+      // No pick of its own: fall back to the global last pick. Leaving the
+      // previous chat's model on screen would be a lie about this chat.
+      if (companion === 'codex') {
+        const model = readStoredCodexModel();
+        setCodexModel(model);
+        setCodexEffort(readStoredCodexEffort(model));
+      } else if (companion === 'claude' || companion === 'assistant') {
+        const model = readStoredClaudeModel();
+        setClaudeModel(model);
+        setClaudeEffort(readStoredClaudeEffort(model));
+      }
+      return;
+    }
     userPickedRef.current = true;
     if (companion === 'codex') {
       const model = normalizeCodexModel(pick.model);
@@ -471,13 +487,16 @@ export default function App() {
         : held.companion;
       openConversation({ ...held, companion: c, repo: liveHubRepo });
     } else if (reposState.status === 'ready') {
-      // A successful list with no hub announced: open the request as-is so a
-      // typed prompt is never stranded. A failed fetch keeps the hold.
+      // A successful list with no hub announced. Open the request with a real
+      // repo: a thread with no repo cannot send at all, so opening one would
+      // strand the typed prompt worse than staying on the threshold. A failed
+      // fetch keeps the hold.
       saddlingRef.current = null;
       setSaddling(false);
-      openConversation(held);
+      const fallback = held.repo ?? repos.find((known) => !known.isAssistantHub);
+      if (fallback) openConversation({ ...held, repo: fallback });
     }
-  }, [liveHubRepo, reposState.status, openConversation, assistantEngine]);
+  }, [liveHubRepo, reposState.status, repos, openConversation, assistantEngine]);
 
   const repoForPath = (path: string, name?: string): Repo => {
     const known = repos.find((r) => r.path === path);

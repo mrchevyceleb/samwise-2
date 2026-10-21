@@ -212,7 +212,9 @@ a { color: inherit; }
 }
 @media (prefers-reduced-motion: reduce) {
   .sw-companion-card, .sw-btn, .sw-dest, .sw-cmdhint { transition: none; }
-  .sw-breathe, .sw-blob-a, .sw-blob-b, .sw-ticker-track { animation: none; }
+  .sw-breathe, .sw-blob-a, .sw-blob-b { animation: none; }
+  /* Without the animation the track would sit off-screen entirely. */
+  .sw-ticker-track { animation: none; padding-left: 0; }
   .sw-cmdhints { animation: none; }
 }
 
@@ -242,3 +244,7 @@ a { color: inherit; }
   .sw-compact-chip { animation: none; }
   .sw-compact-dot { animation: none; }
 }
+
+/* The phone palette is narrow: no native search-X crowding the destination
+   chip. */
+.sw-palette-search::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }

@@ -821,6 +821,12 @@ export function ChatInput({
       if (m) {
         onCompact(m[1].trim() || undefined);
         setV('');
+        // The words became a command, so the attachments must not linger and
+        // ride along on the next message.
+        setImages((prev) => {
+          for (const img of prev) URL.revokeObjectURL(img.previewUrl);
+          return [];
+        });
         return;
       }
     }
