@@ -217,6 +217,8 @@ export function MobileThreshold({
     initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
   );
   const [query, setQuery] = useState('');
+  /** Warm nudge when the palette was used with nowhere to work yet. */
+  const [paletteHint, setPaletteHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
 
   const pickCompanion = (id: CompanionId) => {
@@ -497,7 +499,25 @@ export function MobileThreshold({
             // repo until the list lands, and a repo-less thread cannot send.
             if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
             const text = query.trim();
+            // A name typed with no repo chosen is a repo pick, not a message.
+            // Opening a thread with no repo leaves the prompt unable to send.
+            if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
+              const q = text.toLowerCase();
+              const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
+              const loose = regularRepos.filter((r) => r.name.toLowerCase().includes(q));
+              const pick = exact ?? (loose.length === 1 ? loose[0] : undefined);
+              if (pick) {
+                setSelectedRepo(pick);
+                setQuery('');
+                setPaletteHint(null);
+                onSetForth({ companion: effectiveCompanion, repo: pick });
+                return;
+              }
+              setPaletteHint('pick a repo below first, then speak');
+              return;
+            }
             setQuery('');
+            setPaletteHint(null);
             onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
           }}
           style={{
@@ -516,7 +536,10 @@ export function MobileThreshold({
             enterKeyHint="send"
             inputMode="text"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (paletteHint) setPaletteHint(null);
+            }}
             placeholder="speak, or pick below…"
             style={{
               flex: 1,
@@ -530,6 +553,14 @@ export function MobileThreshold({
             }}
           />
         </form>
+        {paletteHint && (
+          <div
+            className="sw-folio"
+            style={{ fontStyle: 'italic', fontSize: 12.5, color: 'var(--ember)', padding: '8px 16px 10px', borderBottom: '1px solid var(--rule-soft)' }}
+          >
+            {paletteHint}
+          </div>
+        )}
 
         <div style={{ padding: '14px 16px 8px' }}>
           <PSectionLabel folio="i" label="your companion" />

@@ -63,6 +63,8 @@ export function Threshold({
     initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
   );
   const [query, setQuery] = useState('');
+  /** Warm nudge when a set-forth has nowhere to work yet. */
+  const [hint, setHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
 
   const filteredRepos = (() => {
@@ -103,6 +105,23 @@ export function Threshold({
     // typed message can never be sent. Keep it on the threshold; the list is
     // a fraction of a second away.
     if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
+    if (effectiveCompanion !== 'assistant' && !effectiveRepo) {
+      // A name typed with no repo chosen is a repo pick, not a message.
+      const q = (query.trim() || initialMessage || '').toLowerCase();
+      const exact = regularRepos.find((r) => r.name.toLowerCase() === q);
+      const loose = q ? regularRepos.filter((r) => r.name.toLowerCase().includes(q)) : [];
+      const pick = exact ?? (loose.length === 1 ? loose[0] : undefined);
+      if (pick) {
+        setSelectedRepo(pick);
+        setQuery('');
+        setHint(null);
+        onSetForth({ companion: effectiveCompanion, repo: pick });
+        return;
+      }
+      setHint('pick a repo below first, then set forth');
+      return;
+    }
+    setHint(null);
     onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage });
   };
 
@@ -435,7 +454,9 @@ export function Threshold({
           }}
         >
           <span className="sw-folio" style={{ fontStyle: 'italic' }}>
-            {settingForth
+            {hint
+              ? hint
+              : settingForth
               ? reposError
                 ? 'setting forth · shelves out of reach'
                 : 'setting forth · finding the hub…'
