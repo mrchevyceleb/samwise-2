@@ -61,7 +61,7 @@ function MobileGrowingInput({
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ position: 'relative' }}>
         {hints.length > 0 && (
-          <div className="sw-cmdhints" role="listbox" aria-label="commands">
+          <div className="sw-cmdhints" aria-label="commands">
             {hints.map((cmd) => {
               const shown = commandText(
                 commandPrefix === '$' && cmd.name === 'compact' ? '/' : commandPrefix,
@@ -71,8 +71,6 @@ function MobileGrowingInput({
                 <button
                   key={cmd.name}
                   type="button"
-                  role="option"
-                  aria-selected={false}
                   className="sw-cmdhint"
                   onMouseDown={(e) => {
                     e.preventDefault();
@@ -217,6 +215,7 @@ export function MobileThreshold({
   onAssistantEngineChange,
   initialCompanion,
   initialRepo,
+  initialQuery,
 }: {
   repos: Repo[];
   reposLoading?: boolean;
@@ -242,6 +241,7 @@ export function MobileThreshold({
    *  came back from. Typing straight away continues there. */
   initialCompanion?: CompanionId;
   initialRepo?: Repo;
+  initialQuery?: string;
 }) {
   const [companion, setCompanion] = useState<CompanionId>(initialCompanion ?? 'claude');
   const liveAssistantHub = repos.find((r) => r.isAssistantHub) ?? ASSISTANT_HUB;
@@ -249,7 +249,7 @@ export function MobileThreshold({
   const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(
     initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
   );
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   /** Warm nudge when the palette was used with nowhere to work yet. */
   const [paletteHint, setPaletteHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
@@ -286,6 +286,36 @@ export function MobileThreshold({
     companion === 'assistant' && assistantEngine !== 'claude' && liveHubLoaded
       ? assistantEngine
       : companion;
+
+  /** One rule for the phone's Enter and its Set forth button: a typed exact
+   *  repo name picks that repo; anything else is the first message for the
+   *  repo in the destination chip. */
+  const submitPalette = () => {
+    if (settingForth) return;
+    if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
+    const text = query.trim();
+    if (!text) {
+      onSetForth({ companion: effectiveCompanion, repo: effectiveRepo });
+      return;
+    }
+    if (effectiveCompanion !== 'assistant') {
+      const pick = regularRepos.find((r) => r.name.toLowerCase() === text.toLowerCase());
+      if (pick) {
+        setSelectedRepo(pick);
+        setQuery('');
+        setPaletteHint(null);
+        onSetForth({ companion: effectiveCompanion, repo: pick });
+        return;
+      }
+      if (!effectiveRepo) {
+        setPaletteHint('pick a repo below first, then speak');
+        return;
+      }
+    }
+    setQuery('');
+    setPaletteHint(null);
+    onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
+  };
 
   return (
     <div
@@ -556,36 +586,7 @@ export function MobileThreshold({
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!query.trim()) return;
-            if (settingForth) return;
-            // Same rule as the desktop threshold: nothing typed can resolve a
-            // repo until the list lands, and a repo-less thread cannot send.
-            if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
-            const text = query.trim();
-            // A typed repo name (an exact name) is always a repo pick, whatever
-            // is selected, so it can never land as a message in a thread the
-            // user did not choose. Substrings are left to the filter below;
-            // taking them as picks swallowed real one-word messages.
-            if (effectiveCompanion !== 'assistant') {
-              const q = text.toLowerCase();
-              const pick = regularRepos.find((r) => r.name.toLowerCase() === q);
-              if (pick) {
-                setSelectedRepo(pick);
-                setQuery('');
-                setPaletteHint(null);
-                onSetForth({ companion: effectiveCompanion, repo: pick });
-                return;
-              }
-              if (!effectiveRepo) {
-                // Nothing selected and nothing matched: keep the text on the
-                // threshold rather than opening a thread that cannot send.
-                setPaletteHint('pick a repo below first, then speak');
-                return;
-              }
-            }
-            setQuery('');
-            setPaletteHint(null);
-            onSetForth({ companion: effectiveCompanion, repo: effectiveRepo, initialMessage: text });
+            submitPalette();
           }}
           style={{
             padding: '16px 16px',
@@ -782,6 +783,7 @@ export function MobileThreshold({
                             onClick={() => {
                               setSelectedRepo(r);
                               setQuery('');
+                              setPaletteHint(null);
                             }}
                             onToggleStar={onToggleStar}
                           />
@@ -797,6 +799,7 @@ export function MobileThreshold({
                         onClick={() => {
                           setSelectedRepo(r);
                           setQuery('');
+                          setPaletteHint(null);
                         }}
                         onToggleStar={onToggleStar}
                       />
@@ -844,17 +847,7 @@ export function MobileThreshold({
           <button
             className="sw-btn sw-btn-primary"
             disabled={settingForth || (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant')}
-            onClick={() => {
-              if (settingForth) return;
-              if (reposLoading && regularRepos.length === 0 && effectiveCompanion !== 'assistant') return;
-              const text = query.trim();
-              setQuery('');
-              onSetForth({
-                companion: effectiveCompanion,
-                repo: effectiveRepo,
-                initialMessage: text || undefined,
-              });
-            }}
+            onClick={submitPalette}
             style={{
               fontSize: 16,
               padding: '12px 22px',
@@ -1070,7 +1063,7 @@ export function MobileConversation({
     // /compact is housekeeping, handled before the busy branch so it never
     // turns into a steer that interrupts the running turn.
     if (onCompact) {
-      const m = draft.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      const m = draft.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
       if (m) {
         onCompact(m[1].trim() || undefined);
         setDraft('');

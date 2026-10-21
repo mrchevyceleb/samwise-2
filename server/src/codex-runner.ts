@@ -131,8 +131,14 @@ export class CodexSession {
   model: string | null = null;
   effort: string | null = null;
   /** Aborts an in-flight manual compaction's app-server child when the chat
-   *  is stopped or the server shuts down. */
+   *  is stopped or the server shuts down, and lets shutdown wait for it. */
   private compactionAbort: AbortController | null = null;
+  private compactionRun: Promise<void> | null = null;
+  /** Suppresses emits while a stopped session is being torn down. */
+  private silent = false;
+  /** Fresh input of the last finished turn; the "before" figure when the app
+   *  server reports no usage of its own before the first compact. */
+  private lastTurnInputTokens: number | null = null;
   private dead = false;
   private currentChild: ChildProcess | null = null;
   /** Set by shutdown() before SIGTERM so the in-flight send()'s close handler
@@ -223,7 +229,15 @@ export class CodexSession {
     if (this.dead) return;
     this.dead = true;
     this.disarmIdleTimer();
+    // A compact in flight must not emit into a dead session (its error/result
+    // would land in the event log after `closed`), and its app-server must be
+    // gone before the next exec resume touches the same rollout.
+    this.silent = true;
     this.compactionAbort?.abort();
+    if (this.compactionRun) {
+      await this.compactionRun.catch(() => {});
+    }
+    this.silent = false;
     const child = this.currentChild;
     if (child && child.exitCode === null) {
       this.intentionalKill = true;
@@ -254,6 +268,10 @@ export class CodexSession {
   async compact(): Promise<void> {
     if (this.busy) {
       this.emit({ type: 'error', message: 'codex is still answering — wait for it to finish' });
+      // The caller already sent turnStart (a send from another tab can race
+      // the busy check above), so this turn must end too or the client stays
+      // streaming until someone else's turn finishes.
+      this.emit({ type: 'turnEnd', sessionId: this.threadId ?? undefined });
       return;
     }
     if (!this.threadId) {
@@ -261,19 +279,31 @@ export class CodexSession {
       this.emit({ type: 'turnEnd', sessionId: undefined });
       return;
     }
+    const run = this.runCompaction();
+    this.compactionRun = run;
+    try {
+      await run;
+    } finally {
+      if (this.compactionRun === run) this.compactionRun = null;
+    }
+  }
+
+  private async runCompaction(): Promise<void> {
     this.busy = true;
     const abort = new AbortController();
     this.compactionAbort = abort;
     this.emitClaudeEvent({ type: '_compact', ts: Date.now() });
     try {
-      const { preTokens, postTokens } = await compactCodexThread(this.threadId, this.cwd, abort.signal);
+      const { preTokens, postTokens } = await compactCodexThread(this.threadId as string, this.cwd, abort.signal);
       this.emitClaudeEvent({
         type: 'system',
         subtype: 'compact_boundary',
         session_id: this.threadId,
         compact_metadata: {
           trigger: 'manual',
-          ...(typeof preTokens === 'number' ? { pre_tokens: preTokens } : {}),
+          ...(typeof (preTokens ?? this.lastTurnInputTokens) === 'number'
+            ? { pre_tokens: preTokens ?? this.lastTurnInputTokens! }
+            : {}),
           ...(typeof postTokens === 'number' ? { post_tokens: postTokens } : {}),
         },
       });
@@ -501,6 +531,7 @@ export class CodexSession {
   // ── private ────────────────────────────────────────────────
 
   private emit(msg: SessionEvent): void {
+    if (this.silent) return;
     this.lastActivityAtMs = Date.now();
     const se: SeqEvent = { seq: this.nextSeq++, ev: msg, ts: Date.now() };
     this.eventLog.push(se);
@@ -667,6 +698,7 @@ export class CodexSession {
       const cached = Number(u.cached_input_tokens ?? 0);
       const output = Number(u.output_tokens ?? 0);
       const effectiveInput = cached > 0 && cached < input ? input - cached : input;
+      this.lastTurnInputTokens = Math.max(0, effectiveInput);
       state.usage = {
         // Codex reports huge cumulative cache-read counts. For the context
         // meter, show the effective fresh input instead of reconstructing the

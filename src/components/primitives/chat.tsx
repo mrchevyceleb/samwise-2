@@ -817,7 +817,7 @@ export function ChatInput({
     // A typed /compact is housekeeping, not a message. Handled before the
     // busy branch so it can never be steered into a running turn.
     if (onCompact) {
-      const m = v.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      const m = v.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
       if (m) {
         onCompact(m[1].trim() || undefined);
         setV('');
@@ -1033,13 +1033,11 @@ export function ChatInput({
       )}
       <div style={{ position: 'relative' }}>
         {commandHints.length > 0 && (
-          <div className="sw-cmdhints" role="listbox" aria-label="commands">
+          <div className="sw-cmdhints" aria-label="commands">
             {commandHints.map((cmd) => (
               <button
                 key={cmd.name}
                 type="button"
-                role="option"
-                aria-selected={false}
                 className="sw-cmdhint"
                 onMouseDown={(e) => {
                   // Keep focus in the composer; the click only fills the name.

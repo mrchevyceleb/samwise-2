@@ -1069,7 +1069,7 @@ export function useChat(opts: {
   ) => {
     if (!repo) return;
     if (cli === 'claude' || cli === 'assistant' || cli === 'codex') {
-      const m = text.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      const m = text.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
       if (m) {
         // Images are irrelevant to a summary; the command path never sends
         // them, so nothing is silently promised to the model.
@@ -1130,7 +1130,7 @@ export function useChat(opts: {
   ) => {
     if (!repo) return;
     if (cli === 'claude' || cli === 'assistant' || cli === 'codex') {
-      const m = text.trim().match(/^\/compact\b\s*([\s\S]*)$/i);
+      const m = text.trim().match(/^\/compact(?=\s|$)\s*([\s\S]*)$/i);
       if (m) {
         compact(m[1].trim() || undefined);
         return;

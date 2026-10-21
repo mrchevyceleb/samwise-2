@@ -637,6 +637,7 @@ wss.on('connection', (ws, req) => {
           getOrCreateSession({ cli: msg.cli, repoPath: msg.repo, chatId }),
           sinceSeq,
         );
+        compacting = false;
         if (!session) {
           // Superseded by a newer bind; that newer call will send `ready`.
           return;
@@ -780,8 +781,16 @@ wss.on('connection', (ws, req) => {
       compacting = true;
       if (!sessionPromise && cliKind && repoPath) {
         try {
-          await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
+          const bound = await bindSession(getOrCreateSession({ cli: cliKind, repoPath, chatId }));
+          if (!bound) {
+            // Superseded by a newer bind; it owns the socket now.
+            compacting = false;
+            return;
+          }
         } catch (e) {
+          // Nothing will ever make this turn start, so the latch must not stay
+          // closed: every later send on this socket would be refused.
+          compacting = false;
           safeSend({ type: 'error', message: String((e as Error).message) });
           return;
         }

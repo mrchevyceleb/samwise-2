@@ -46,6 +46,9 @@ export async function compactCodexThread(
     cwd,
     env: process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // Own process group: codex spawns tool grandchildren, and killing only the
+    // direct child would leave them writing to the thread's rollout.
+    detached: true,
   });
 
   let stderrTail = '';
@@ -57,6 +60,7 @@ export async function compactCodexThread(
   const pending = new Map<number, (msg: JsonRpcMessage) => void>();
   let preTokens: number | undefined;
   let postTokens: number | undefined;
+  let compactRequested = false;
   let compactAcked = false;
   let exited = false;
   let exitCode: number | null = null;
@@ -81,6 +85,7 @@ export async function compactCodexThread(
     exited = true;
     exitCode = code;
     exitSignal = sig;
+    for (const fn of exitHandlers) fn();
     const tail = stderrTail.trim().split('\n').slice(-3).join(' | ');
     failAll(new CodexAppServerError(
       `codex app-server exited (${sig ?? code ?? 'unknown'})${tail ? `: ${tail}` : ''}`,
@@ -119,11 +124,11 @@ export async function compactCodexThread(
     } else if (msg.method === 'thread/tokenUsage/updated') {
       const last = params?.tokenUsage?.last?.totalTokens;
       if (typeof last === 'number' && last > 0) {
-        // Usage before compaction/start is acknowledged is the "before" size;
-        // after it, the "after" size. Reading them the other way round made
-        // the chip claim the thread was never shrunk.
-        if (compactAcked) postTokens = last;
-        else preTokens = last;
+        // Usage before compact/start is sent is the "before" size; usage after
+        // the server acknowledges it is the "after" size. A line in between is
+        // ignored rather than guessed at.
+        if (!compactRequested) preTokens = last;
+        else if (compactAcked) postTokens = last;
       }
     } else if (msg.method === 'turn/completed' && compactAcked) {
       // Covers an app-server build that finishes without the item event.
@@ -142,6 +147,10 @@ export async function compactCodexThread(
 
   const request = (method: string, params: Record<string, unknown>, timeoutMs: number) =>
     new Promise<JsonRpcMessage>((resolve, reject) => {
+      if (failure) {
+        reject(failure);
+        return;
+      }
       const id = nextId++;
       const timer = setTimeout(() => {
         pending.delete(id);
@@ -181,6 +190,7 @@ export async function compactCodexThread(
     const resume = await request('thread/resume', { threadId }, COMPACT_START_TIMEOUT_MS);
     if (resume.error) throw new CodexAppServerError(resume.error.message ?? 'resume failed');
 
+    compactRequested = true;
     const start = await request(
       'thread/compact/start',
       { threadId },
@@ -207,9 +217,15 @@ export async function compactCodexThread(
     signal?.removeEventListener('abort', onAbort);
     rl.close();
     if (!exited && exitCode === null && exitSignal === null) {
-      child.kill('SIGTERM');
+      const signalTree = (sig: NodeJS.Signals) => {
+        try { child.kill(sig); } catch {}
+        if (child.pid) {
+          try { process.kill(-child.pid, sig); } catch {}
+        }
+      };
+      signalTree('SIGTERM');
       const grace = setTimeout(() => {
-        if (!exited && exitCode === null && exitSignal === null) child.kill('SIGKILL');
+        if (!exited && exitCode === null && exitSignal === null) signalTree('SIGKILL');
       }, KILL_GRACE_MS);
       grace.unref?.();
       await waitForExit();

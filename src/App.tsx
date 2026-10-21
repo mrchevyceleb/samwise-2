@@ -203,6 +203,9 @@ export default function App() {
   const [chatId, setChatId] = useState<string>(initialActive?.chatId ?? 'main');
   const [errandTitle, setErrandTitle] = useState('a fresh errand');
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
+  /** Text handed back to the threshold when a set-forth could not open (a
+   *  hold that found no repo). The words are restored instead of lost. */
+  const [thresholdDraft, setThresholdDraft] = useState('');
   // Chosen Banana model. Defaults to the last pick (initial default
   // monkey/silverback). Only the Banana runner sends it.
   const [bananaModel, setBananaModel] = useState<string>(readStoredBananaModel);
@@ -286,9 +289,10 @@ export default function App() {
         // A pick made in this view, or one remembered for this chat, outranks
         // anything the session reports: the next send carries it.
         if (userPickedRef.current || readChatPick('codex', repo?.path, chatId)) return null;
+        // Show the session's truth without moving the global fallback: opening
+        // one chat must not change the default for every other chat.
         setCodexModel(nextModel);
         setCodexEffort(nextEffort);
-        writeStoredCodexSelection(nextModel, nextEffort);
         return { model: nextModel, effort: nextEffort };
       }
       if (companion !== 'claude' && companion !== 'assistant') return null;
@@ -323,7 +327,8 @@ export default function App() {
       }
       setClaudeModel(nextModel);
       setClaudeEffort(nextEffort);
-      writeStoredClaudeSelection(nextModel, nextEffort);
+      // The session mirror still tracks cross-device changes, but the global
+      // stored pick stays whatever the user last chose explicitly.
       writeSessionClaudeSelection(nextModel, nextEffort);
       return { model: nextModel, effort: nextEffort };
     },
@@ -436,6 +441,7 @@ export default function App() {
       setChatId(normalizedChatId);
       setView('conversation');
       setErrandTitle('a fresh errand');
+      setThresholdDraft('');
       setPendingFirstMessage(initialMessage ?? null);
       if (r) writeActive({ cli: c, repoPath: r.path, chatId: normalizedChatId });
       else writeActive(null);
@@ -493,8 +499,18 @@ export default function App() {
       // fetch keeps the hold.
       saddlingRef.current = null;
       setSaddling(false);
-      const fallback = held.repo ?? repos.find((known) => !known.isAssistantHub);
-      if (fallback) openConversation({ ...held, repo: fallback });
+      // An assistant-lane prompt must never be opened against an unrelated
+      // repo (the server would run it in the hub anyway). Only a non-assistant
+      // request may fall back, and when nothing can open, the words go back
+      // into the threshold box instead of vanishing.
+      const fallback = held.repo
+        ?? (held.companion === 'assistant' ? undefined : repos.find((known) => !known.isAssistantHub));
+      if (fallback) {
+        openConversation({ ...held, repo: fallback });
+      } else {
+        setThresholdDraft(held.initialMessage ?? '');
+        setView('threshold');
+      }
     }
   }, [liveHubRepo, reposState.status, repos, openConversation, assistantEngine]);
 
@@ -633,6 +649,7 @@ export default function App() {
       <div className={appClass}>
         {view === 'threshold' ? (
           <MobileThreshold
+            initialQuery={thresholdDraft}
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}
@@ -735,6 +752,7 @@ export default function App() {
       >
         {view === 'threshold' ? (
           <Threshold
+            initialQuery={thresholdDraft}
             repos={repos}
             reposLoading={reposLoading}
             onSetForth={setForth}

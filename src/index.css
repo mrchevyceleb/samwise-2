@@ -146,7 +146,9 @@ a { color: inherit; }
     transform 150ms cubic-bezier(.34,1.56,.64,1),
     box-shadow 150ms ease;
 }
-.sw-btn:hover:not(:disabled) { transform: translateY(-1px) scale(1.03); box-shadow: 0 5px 14px rgba(74, 50, 24, 0.14); }
+@media (hover: hover) {
+  .sw-btn:hover:not(:disabled) { transform: translateY(-1px) scale(1.03); box-shadow: 0 5px 14px rgba(74, 50, 24, 0.14); }
+}
 .sw-btn:active:not(:disabled) { transform: translateY(0) scale(0.96); box-shadow: none; }
 .sw-companion-card {
   transition:
@@ -154,10 +156,14 @@ a { color: inherit; }
     box-shadow 170ms ease,
     border-color 170ms ease;
 }
-.sw-companion-card:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 10px 24px rgba(74, 50, 24, 0.14); }
+@media (hover: hover) {
+  .sw-companion-card:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 10px 24px rgba(74, 50, 24, 0.14); }
+}
 .sw-companion-card:active { transform: translateY(0) scale(0.98); }
 .sw-dest { transition: border-color 150ms ease, color 150ms ease, transform 150ms ease; }
-.sw-dest:hover { border-color: rgba(184, 89, 58, 0.55); transform: translateY(-1px); }
+@media (hover: hover) {
+  .sw-dest:hover { border-color: rgba(184, 89, 58, 0.55); transform: translateY(-1px); }
+}
 .sw-breathe { animation: sw-breathe 6.5s ease-in-out infinite; }
 @keyframes sw-breathe {
   0%, 100% { transform: scale(1); }

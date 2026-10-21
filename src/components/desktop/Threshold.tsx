@@ -40,6 +40,8 @@ type ThresholdProps = {
    *  came back from. Typing straight away continues there. */
   initialCompanion?: CompanionId;
   initialRepo?: Repo;
+  /** Words handed back after a set-forth that could not open. */
+  initialQuery?: string;
 };
 
 export function Threshold({
@@ -54,6 +56,7 @@ export function Threshold({
   onAssistantEngineChange,
   initialCompanion,
   initialRepo,
+  initialQuery,
 }: ThresholdProps) {
   const [companion, setCompanion] = useState<CompanionId>(initialCompanion ?? 'claude');
   // The Assistant Hub from the live repo list, if discovered. Falls back to the constant.
@@ -62,7 +65,7 @@ export function Threshold({
   const [selectedRepo, setSelectedRepo] = useState<Repo | undefined>(
     initialRepo && !initialRepo.isAssistantHub ? initialRepo : undefined,
   );
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   /** Warm nudge when a set-forth has nowhere to work yet. */
   const [hint, setHint] = useState<string | null>(null);
   const defaultRepo = regularRepos[0];
@@ -279,7 +282,10 @@ export function Threshold({
           <SearchGlyph size={18} />
           <input
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              if (hint) setHint(null);
+            }}
             onKeyDown={handleSearchKey}
             placeholder="type to begin, or pick from below"
             style={{
@@ -466,6 +472,7 @@ export function Threshold({
                             // The text was a filter, not a message. Leaving it
                             // in made "Set forth" send it as the first prompt.
                             setQuery('');
+                            setHint(null);
                           }}
                           onToggleStar={onToggleStar}
                         />
